@@ -1,45 +1,301 @@
 #!/bin/bash
 
 # NodeODM processing script for Tapis
-# Arguments: input_dir output_dir
+# Based on the working nodeodm.sh configuration
+# Arguments: input_dir output_dir [max_concurrency] [port]
 
 INPUT_DIR=$1
 OUTPUT_DIR=$2
+MAX_CONCURRENCY=${3:-4}
+NODEODM_PORT=${4:-3001}
 
 echo "NodeODM processing started by ${_tapisJobOwner}"
 echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
+echo "Max concurrency: $MAX_CONCURRENCY"
+echo "Port: $NODEODM_PORT"
+
+# Check for required arguments
+if [ $# -lt 2 ]; then
+    echo "Usage: $0 <input_dir> <output_dir> [max_concurrency] [port]"
+    echo "Example: $0 /input /output 4 3001"
+    echo "input_dir: Directory containing input images"
+    echo "output_dir: Directory for output results"
+    echo "max_concurrency: Number of concurrent processing tasks (default: 4)"
+    echo "port: NodeODM port (default: 3001)"
+    exit 1
+fi
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
+LOG_DIR=$OUTPUT_DIR/logs
+mkdir -p $LOG_DIR
 
-# List input files
-echo "Input files found:" > $OUTPUT_DIR/file_listing.txt
-if [ -d "$INPUT_DIR" ]; then
-    ls -la $INPUT_DIR >> $OUTPUT_DIR/file_listing.txt
-    
-    # Count image files
-    IMAGE_COUNT=$(find $INPUT_DIR -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" | wc -l)
-    echo "Total image files: $IMAGE_COUNT" >> $OUTPUT_DIR/file_listing.txt
-    
-    # List each image file
-    echo "Image files:" >> $OUTPUT_DIR/file_listing.txt
-    find $INPUT_DIR -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" | sort >> $OUTPUT_DIR/file_listing.txt
-else
-    echo "ERROR: Input directory $INPUT_DIR not found!" >> $OUTPUT_DIR/file_listing.txt
+# Validate input directory and count images
+if [ ! -d "$INPUT_DIR" ]; then
+    echo "ERROR: Input directory $INPUT_DIR not found!"
+    exit 1
 fi
 
-# For now, create a simple processing report
+IMAGE_COUNT=$(find $INPUT_DIR -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" -o -name "*.tif" -o -name "*.tiff" -o -name "*.TIF" -o -name "*.TIFF" | wc -l)
+echo "Found $IMAGE_COUNT images in input directory"
+
+if [ $IMAGE_COUNT -eq 0 ]; then
+    echo "ERROR: No images found in input directory"
+    exit 1
+fi
+
+# Set up working directory structure (similar to nodeodm.sh)
+WORK_DIR=$(pwd)/nodeodm_workdir
+mkdir -p $WORK_DIR/data
+mkdir -p $WORK_DIR/tmp
+chmod 777 $WORK_DIR/data
+chmod 777 $WORK_DIR/tmp
+
+echo "Directory structure created:"
+ls -la $WORK_DIR/
+
+# TAP functions for reverse port forwarding
+function get_tap_certificate() {
+    mkdir -p ${HOME}/.tap # this should exist at this point, but just in case...
+    export TAP_CERTFILE=${HOME}/.tap/.${SLURM_JOB_ID}
+    # bail if we cannot create a secure session
+    if [ ! -f ${TAP_CERTFILE} ]; then
+        echo "TACC: ERROR - could not find TLS cert for secure session"
+        echo "TACC: job ${SLURM_JOB_ID} execution finished at: $(date)"
+        exit 1
+    fi
+}
+
+function get_tap_token() {
+    # bail if we cannot create a token for the session
+    TAP_TOKEN=$(tap_get_token)
+    if [ -z "${TAP_TOKEN}" ]; then
+        echo "TACC: ERROR - could not generate token for odm session"
+        echo "TACC: job ${SLURM_JOB_ID} execution finished at: $(date)"
+        exit 1
+    fi
+    echo "TACC: using token ${TAP_TOKEN}"
+    LOGIN_PORT=$(tap_get_port)
+    export TAP_TOKEN
+    export LOGIN_PORT
+}
+
+function load_tap_functions() {
+    TAP_FUNCTIONS="/share/doc/slurm/tap_functions"
+    if [ -f ${TAP_FUNCTIONS} ]; then
+        . ${TAP_FUNCTIONS}
+    else
+        echo "TACC:"
+        echo "TACC: ERROR - could not find TAP functions file: ${TAP_FUNCTIONS}"
+        echo "TACC: ERROR - Please submit a consulting ticket at the TACC user portal"
+        echo "TACC: ERROR - https://portal.tacc.utexas.edu/tacc-consulting/-/consult/tickets/create"
+        echo "TACC:"
+        echo "TACC: job $SLURM_JOB_ID execution finished at: $(date)"
+        exit 1
+    fi
+}
+
+function port_forwarding_tap() {
+    LOCAL_PORT=$NODEODM_PORT
+    # Disable exit on error so we can check the ssh tunnel status.
+    set +e
+    for i in $(seq 2); do
+        ssh -o StrictHostKeyChecking=no -q -f -g -N -R ${LOGIN_PORT}:${HOSTNAME}:${LOCAL_PORT} login${i}
+    done
+    if [ $(ps -fu ${USER} | grep ssh | grep login | grep -vc grep) != 2 ]; then
+        echo "TACC: ERROR - ssh tunnels failed to launch"
+        echo "TACC: ERROR - this is often due to an issue with your ssh keys"
+        echo "TACC: ERROR - undo any recent mods in ${HOME}/.ssh"
+        echo "TACC: ERROR - or submit a TACC consulting ticket with this error"
+        echo "TACC: job ${SLURM_JOB_ID} execution finished at: $(date)"
+        return 1
+    fi
+    # Re-enable exit on error.
+    set -e
+    NODEODM_URL="https://ls6.tacc.utexas.edu:${LOGIN_PORT}/"
+    echo "TACC: NodeODM should be available at: ${NODEODM_URL}"
+    return 0
+}
+
+# Function to cleanup on exit
+cleanup() {
+    echo "Cleaning up processes..."
+    pkill -f "node.*index.js" 2>/dev/null || true
+    pkill -f apptainer 2>/dev/null || true
+    # Clean up SSH tunnels
+    pkill -f "ssh.*login" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Start NodeODM with the proven working configuration from nodeodm.sh
+echo "Starting NodeODM..."
+apptainer exec \
+    --writable-tmpfs \
+    --bind $WORK_DIR/tmp:/var/www/tmp:rw \
+    --bind $WORK_DIR/data:/var/www/data:rw \
+    docker://opendronemap/nodeodm:latest \
+    sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880" > $LOG_DIR/nodeodm.log 2>&1 &
+
+NODEODM_PID=$!
+echo "NodeODM PID: $NODEODM_PID"
+
+# Wait for NodeODM to start (same as nodeodm.sh)
+echo "Waiting for NodeODM to initialize..."
+sleep 30
+
+# Test NodeODM connectivity
+echo "Testing NodeODM connectivity..."
+for i in {1..10}; do
+    if curl -s http://localhost:$NODEODM_PORT/info > /dev/null 2>&1; then
+        echo "✓ NodeODM is responding on port $NODEODM_PORT"
+        break
+    else
+        echo "  Attempt $i/10: NodeODM not ready yet..."
+        sleep 10
+    fi
+done
+
+# Get NodeODM info
+NODEODM_INFO=$(curl -s http://localhost:$NODEODM_PORT/info 2>/dev/null)
+if [ $? -eq 0 ]; then
+    echo "NodeODM Info:"
+    echo "$NODEODM_INFO"
+    echo "$NODEODM_INFO" > $OUTPUT_DIR/nodeodm_info.json
+else
+    echo "ERROR: NodeODM failed to start properly"
+    echo "Check logs:"
+    tail -20 $LOG_DIR/nodeodm.log
+    exit 1
+fi
+
+# Set up TAP external access if running on TACC
+if [ -n "$SLURM_JOB_ID" ]; then
+    echo "Setting up TAP external access..."
+    load_tap_functions
+    get_tap_certificate
+    get_tap_token
+    if port_forwarding_tap; then
+        echo "✓ TAP reverse tunneling setup successful"
+        echo "External Access URL: https://ls6.tacc.utexas.edu:${LOGIN_PORT}/"
+        EXTERNAL_URL="https://ls6.tacc.utexas.edu:${LOGIN_PORT}/"
+    else
+        echo "WARNING: TAP reverse tunneling failed"
+        EXTERNAL_URL="N/A - use SSH tunnel"
+    fi
+else
+    echo "Not running on TACC (no SLURM_JOB_ID), skipping TAP setup"
+    EXTERNAL_URL="N/A - not on TACC"
+fi
+
+# Create a processing task
+echo "Creating processing task..."
+TASK_RESPONSE=$(curl -s -X POST \
+    -H "Content-Type: multipart/form-data" \
+    -F "name=tapis_job_${_tapisJobUUID}" \
+    http://localhost:$NODEODM_PORT/task/new)
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to create task"
+    exit 1
+fi
+
+# Extract task UUID
+TASK_UUID=$(echo "$TASK_RESPONSE" | grep -o '"uuid":"[^"]*"' | cut -d'"' -f4)
+echo "Created task with UUID: $TASK_UUID"
+
+# Upload images to the task
+echo "Uploading images to task..."
+cd $INPUT_DIR
+for image in $(find . -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" -o -name "*.tif" -o -name "*.tiff" -o -name "*.TIF" -o -name "*.TIFF"); do
+    echo "Uploading: $image"
+    curl -s -X POST \
+        -F "images=@$image" \
+        http://localhost:$NODEODM_PORT/task/$TASK_UUID/upload
+done
+
+# Start processing
+echo "Starting task processing..."
+curl -s -X POST http://localhost:$NODEODM_PORT/task/$TASK_UUID/start
+
+# Monitor task progress
+echo "Monitoring task progress..."
+while true; do
+    STATUS_RESPONSE=$(curl -s http://localhost:$NODEODM_PORT/task/$TASK_UUID/info)
+    STATUS=$(echo "$STATUS_RESPONSE" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+    PROGRESS=$(echo "$STATUS_RESPONSE" | grep -o '"progress":[0-9]*' | cut -d':' -f2)
+    
+    echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
+    
+    case $STATUS in
+        "COMPLETED")
+            echo "✓ Task completed successfully"
+            break
+            ;;
+        "FAILED")
+            echo "✗ Task failed"
+            echo "Error details:"
+            echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
+            exit 1
+            ;;
+        "CANCELED")
+            echo "✗ Task was canceled"
+            exit 1
+            ;;
+        *)
+            sleep 30
+            ;;
+    esac
+done
+
+# Download results
+echo "Downloading results..."
+curl -s -o $OUTPUT_DIR/all.zip http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip
+curl -s -o $OUTPUT_DIR/orthophoto.tif http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif
+curl -s -o $OUTPUT_DIR/dsm.tif http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif
+curl -s -o $OUTPUT_DIR/dtm.tif http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif
+
+# Generate processing report
 echo "NodeODM Processing Report" > $OUTPUT_DIR/processing_report.txt
 echo "========================" >> $OUTPUT_DIR/processing_report.txt
 echo "Job Owner: ${_tapisJobOwner}" >> $OUTPUT_DIR/processing_report.txt
 echo "Job UUID: ${_tapisJobUUID}" >> $OUTPUT_DIR/processing_report.txt
+echo "Task UUID: $TASK_UUID" >> $OUTPUT_DIR/processing_report.txt
 echo "Processing Time: $(date)" >> $OUTPUT_DIR/processing_report.txt
 echo "Input Directory: $INPUT_DIR" >> $OUTPUT_DIR/processing_report.txt
 echo "Output Directory: $OUTPUT_DIR" >> $OUTPUT_DIR/processing_report.txt
-
-# Copy file listing to report
+echo "Images Processed: $IMAGE_COUNT" >> $OUTPUT_DIR/processing_report.txt
+echo "Max Concurrency: $MAX_CONCURRENCY" >> $OUTPUT_DIR/processing_report.txt
+echo "Port: $NODEODM_PORT" >> $OUTPUT_DIR/processing_report.txt
+echo "External URL: ${EXTERNAL_URL}" >> $OUTPUT_DIR/processing_report.txt
+if [ -n "$LOGIN_PORT" ]; then
+    echo "TAP Login Port: $LOGIN_PORT" >> $OUTPUT_DIR/processing_report.txt
+fi
 echo "" >> $OUTPUT_DIR/processing_report.txt
-cat $OUTPUT_DIR/file_listing.txt >> $OUTPUT_DIR/processing_report.txt
+echo "NodeODM Info:" >> $OUTPUT_DIR/processing_report.txt
+echo "$NODEODM_INFO" >> $OUTPUT_DIR/processing_report.txt
 
-echo "NodeODM processing completed. Check output files for results."
+# List output files
+echo "" >> $OUTPUT_DIR/processing_report.txt
+echo "Output Files:" >> $OUTPUT_DIR/processing_report.txt
+ls -la $OUTPUT_DIR >> $OUTPUT_DIR/processing_report.txt
+
+echo "NodeODM processing completed successfully!"
+echo "Results saved to: $OUTPUT_DIR"
+
+echo ""
+echo "========================================="
+echo "NodeODM Processing Complete"
+echo "========================================="
+echo "Task UUID: $TASK_UUID"
+echo "Images processed: $IMAGE_COUNT"
+if [ -n "$SLURM_JOB_ID" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ]; then
+    echo "External access: $EXTERNAL_URL"
+    echo "Info endpoint: ${EXTERNAL_URL}info"
+else
+    echo "SSH tunnel required for external access:"
+    echo "ssh -N -L $NODEODM_PORT:$(hostname):$NODEODM_PORT $USER@ls6.tacc.utexas.edu"
+fi
+echo "Local access: http://localhost:$NODEODM_PORT"
+echo "Output directory: $OUTPUT_DIR"
+echo "========================================="
