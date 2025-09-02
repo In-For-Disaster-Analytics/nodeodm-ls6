@@ -1,30 +1,23 @@
 #!/bin/bash
+set -xe
 
 # NodeODM processing script for Tapis
 # Based on the working nodeodm.sh configuration
-# Arguments: input_dir output_dir [max_concurrency] [port]
+# Arguments: max_concurrency [port]
 
-INPUT_DIR=$1
-OUTPUT_DIR=$2
-MAX_CONCURRENCY=${3:-4}
-NODEODM_PORT=${4:-3001}
+MAX_CONCURRENCY=${1:-4}
+NODEODM_PORT=${2:-3001}
+
+# Use Tapis environment variables for input/output directories
+INPUT_DIR="${_tapisExecSystemInputDir}"
+OUTPUT_DIR="${_tapisExecSystemOutputDir}"
 
 echo "NodeODM processing started by ${_tapisJobOwner}"
+echo "Job UUID: ${_tapisJobUUID}"
 echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "Max concurrency: $MAX_CONCURRENCY"
 echo "Port: $NODEODM_PORT"
-
-# Check for required arguments
-if [ $# -lt 2 ]; then
-    echo "Usage: $0 <input_dir> <output_dir> [max_concurrency] [port]"
-    echo "Example: $0 /input /output 4 3001"
-    echo "input_dir: Directory containing input images"
-    echo "output_dir: Directory for output results"
-    echo "max_concurrency: Number of concurrent processing tasks (default: 4)"
-    echo "port: NodeODM port (default: 3001)"
-    exit 1
-fi
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
