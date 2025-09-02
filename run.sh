@@ -48,6 +48,24 @@ chmod 777 $WORK_DIR/tmp
 echo "Directory structure created:"
 ls -la $WORK_DIR/
 
+# Test apptainer and container availability
+echo "Testing Apptainer and NodeODM container..."
+if ! command -v apptainer &> /dev/null; then
+    echo "ERROR: apptainer command not found"
+    echo "Available modules:"
+    module avail 2>&1 | grep -i apptainer || echo "No apptainer modules found"
+    exit 1
+fi
+
+echo "Apptainer version:"
+apptainer --version
+
+echo "Testing container pull..."
+if ! apptainer exec docker://opendronemap/nodeodm:latest echo "Container test successful"; then
+    echo "ERROR: Failed to run test command in NodeODM container"
+    exit 1
+fi
+
 # TAP functions for reverse port forwarding
 function get_tap_certificate() {
     mkdir -p ${HOME}/.tap # this should exist at this point, but just in case...
@@ -123,6 +141,8 @@ trap cleanup EXIT
 
 # Start NodeODM with the proven working configuration from nodeodm.sh
 echo "Starting NodeODM..."
+echo "Command: apptainer exec --writable-tmpfs --bind $WORK_DIR/tmp:/var/www/tmp:rw --bind $WORK_DIR/data:/var/www/data:rw docker://opendronemap/nodeodm:latest sh -c \"cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880\""
+
 apptainer exec \
     --writable-tmpfs \
     --bind $WORK_DIR/tmp:/var/www/tmp:rw \
@@ -132,6 +152,15 @@ apptainer exec \
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID"
+
+# Check if the process actually started
+sleep 5
+if ! kill -0 $NODEODM_PID 2>/dev/null; then
+    echo "ERROR: NodeODM process died immediately"
+    echo "Check startup logs:"
+    cat $LOG_DIR/nodeodm.log
+    exit 1
+fi
 
 # Wait for NodeODM to start (same as nodeodm.sh)
 echo "Waiting for NodeODM to initialize..."
@@ -151,14 +180,39 @@ done
 
 # Get NodeODM info
 NODEODM_INFO=$(curl -s http://localhost:$NODEODM_PORT/info 2>/dev/null)
-if [ $? -eq 0 ]; then
+if [ $? -eq 0 ] && [ -n "$NODEODM_INFO" ]; then
     echo "NodeODM Info:"
     echo "$NODEODM_INFO"
     echo "$NODEODM_INFO" > $OUTPUT_DIR/nodeodm_info.json
 else
     echo "ERROR: NodeODM failed to start properly"
-    echo "Check logs:"
-    tail -20 $LOG_DIR/nodeodm.log
+    echo "Process status:"
+    if kill -0 $NODEODM_PID 2>/dev/null; then
+        echo "  NodeODM process is still running (PID: $NODEODM_PID)"
+    else
+        echo "  NodeODM process has died"
+    fi
+    
+    echo "Port check:"
+    if netstat -ln 2>/dev/null | grep :$NODEODM_PORT; then
+        echo "  Port $NODEODM_PORT is listening"
+    else
+        echo "  Port $NODEODM_PORT is not listening"
+    fi
+    
+    echo "Container processes:"
+    ps aux | grep -E "(apptainer|node)" | grep -v grep || echo "  No relevant processes found"
+    
+    echo "Startup logs:"
+    if [ -f $LOG_DIR/nodeodm.log ]; then
+        tail -50 $LOG_DIR/nodeodm.log
+    else
+        echo "  No log file found at $LOG_DIR/nodeodm.log"
+    fi
+    
+    echo "Directory permissions:"
+    ls -la $WORK_DIR/
+    
     exit 1
 fi
 
