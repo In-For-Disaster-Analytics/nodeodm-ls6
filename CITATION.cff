@@ -1,0 +1,28 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: Cookbook-Tutorial-Template
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Maximiliano
+    family-names: Osorio
+    orcid: 'https://orcid.org/0000-0002-3611-6510'
+  - given-names: William
+    family-names: Mobley
+    email: wmobley@tacc.utexas.edu
+    affiliation: Texas Advanced Computing Center
+    orcid: 'https://orcid.org/0000-0003-1783-0599'
+  - given-names: Lissa
+    family-names: Pearson
+  - given-names: Suzanne
+    family-names: Pierce
+    email: spierce@tacc.utexas.edu
+    affiliation: Texas Advanced Computing Center
+    orcid: 'https://orcid.org/0000-0002-3050-1987'
+repository-code: >-
+  https://github.com/In-For-Disaster-Analytics/Cookbook-Tutorial-Template
+license: Apache-1.0
