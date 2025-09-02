@@ -1,13 +1,13 @@
 {
-  "id": "no-interactive-example",
-  "version": "0.1.0",
-  "description": "Run an non-interactive script on TACC using docker.",
+  "id": "nodeodm-ls6",
+  "version": "1.0.1",
+  "description": "NodeODM photogrammetry processing on LS6 using Singularity.",
   "owner": "${apiUserId}",
   "enabled": true,
   "runtime": "SINGULARITY",
   "runtimeVersion": null,
   "runtimeOptions": ["SINGULARITY_RUN"],
-  "containerImage": "docker://ghcr.io/in-for-disaster-analytics/cookbook-docker-template:0.1.0",
+  "containerImage": "docker://ghcr.io/in-for-disaster-analytics/nodeodm-ls6:sha-305d664",
   "jobType": "BATCH",
   "maxJobs": -1,
   "maxJobsPerUser": -1,
@@ -20,7 +20,7 @@
     "execSystemExecDir": "${JobWorkingDir}",
     "execSystemInputDir": "${JobWorkingDir}",
     "execSystemOutputDir": "${JobWorkingDir}/output",
-    "execSystemLogicalQueue": "development",
+    "execSystemLogicalQueue": "vm-small",
     "archiveSystemId": "cloud.data",
     "archiveSystemDir": "HOST_EVAL($HOME)/tapis-jobs-archive/${JobCreateDate}/${JobName}-${JobUUID}",
     "archiveOnAppError": true,
@@ -30,16 +30,16 @@
     "parameterSet": {
       "appArgs": [
         {
-          "name": "Greeting",
-          "description": "Choose a greeting to give to your target",
-          "inputMode": "REQUIRED",
-          "arg": "hello"
+          "name": "Input Directory",
+          "description": "Directory containing input images",
+          "inputMode": "FIXED",
+          "arg": "/inputs"
         },
         {
-          "name": "Target",
-          "description": "Whom to address your greeting",
-          "inputMode": "REQUIRED",
-          "arg": "world"
+          "name": "Output Directory", 
+          "description": "Directory for output files",
+          "inputMode": "FIXED",
+          "arg": "/outputs"
         }
       ],
       "containerArgs": [
@@ -80,24 +80,33 @@
         "includeLaunchFiles": true
       }
     },
-    "fileInputs": [],
+    "fileInputs": [
+      {
+        "name": "inputImages",
+        "description": "Input images for ODM processing",
+        "inputMode": "REQUIRED",
+        "autoMountLocal": true,
+        "sourceUrl": null,
+        "targetPath": "inputs"
+      }
+    ],
     "fileInputArrays": [],
     "nodeCount": 1,
-    "coresPerNode": 1,
-    "memoryMB": 1000,
-    "maxMinutes": 10,
+    "coresPerNode": 4,
+    "memoryMB": 16384,
+    "maxMinutes": 120,
     "subscriptions": [],
     "tags": []
   },
   "tags": ["portalName: ALL"],
   "notes": {
-    "label": "My first cookbook",
-    "helpUrl": "https://github.com/In-For-Disaster-Analytics/Cookbook-Docker-Template",
-    "helpText": "This app is non-interactive and runs a simple script that greets a target with a greeting of your choice",
-    "hideNodeCountAndCoresPerNode": true,
+    "label": "NodeODM on LS6",
+    "helpUrl": "https://github.com/OpenDroneMap/NodeODM",
+    "helpText": "NodeODM photogrammetry processing for drone imagery. Processes input images to create orthophotos, point clouds, and 3D models.",
+    "hideNodeCountAndCoresPerNode": false,
     "isInteractive": false,
-    "icon": "jupyter",
+    "icon": "camera",
     "category": "Data Processing",
-    "queueFilter": ["development", "normal"]
+    "queueFilter": ["vm-small", "normal"]
   }
 }
