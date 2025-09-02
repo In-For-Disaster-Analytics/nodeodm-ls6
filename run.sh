@@ -48,6 +48,10 @@ chmod 777 $WORK_DIR/tmp
 echo "Directory structure created:"
 ls -la $WORK_DIR/
 
+# Load required modules (like in nodeodm.sh)
+echo "Loading required modules..."
+module load tacc-apptainer
+
 # Test apptainer and container availability
 echo "Testing Apptainer and NodeODM container..."
 if ! command -v apptainer &> /dev/null; then
