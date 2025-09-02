@@ -1,18 +1,18 @@
 #!/bin/bash
-set -xe
 
 # NodeODM processing script for Tapis
-# Based on the working nodeodm.sh configuration
-# Arguments: max_concurrency [port]
+# Based on the working nodeodm.sh configuration - using ZIP runtime to access TACC modules
+# ZIP runtime means we run directly on compute node and can use module load tacc-apptainer
 
 MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
 
-# Use Tapis environment variables for input/output directories
+# Use Tapis environment variables for input/output directories  
 INPUT_DIR="${_tapisExecSystemInputDir}"
 OUTPUT_DIR="${_tapisExecSystemOutputDir}"
 
-echo "NodeODM processing started by ${_tapisJobOwner}"
+echo "=== NodeODM Tapis Processing (ZIP Runtime) ==="
+echo "Processing started by: ${_tapisJobOwner}"
 echo "Job UUID: ${_tapisJobUUID}"
 echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
@@ -23,6 +23,16 @@ echo "Port: $NODEODM_PORT"
 mkdir -p $OUTPUT_DIR
 LOG_DIR=$OUTPUT_DIR/logs
 mkdir -p $LOG_DIR
+
+# Load required modules (from working nodeodm.sh)
+echo "Loading required modules..."
+module load tacc-apptainer
+
+echo "Working directory: $(pwd)"
+echo "Environment:"
+echo "  User: $(whoami)"
+echo "  Hostname: $(hostname)"
+echo "  SLURM_JOB_ID: ${SLURM_JOB_ID}"
 
 # Validate input directory and count images
 if [ ! -d "$INPUT_DIR" ]; then
@@ -38,7 +48,7 @@ if [ $IMAGE_COUNT -eq 0 ]; then
     exit 1
 fi
 
-# Set up working directory structure (similar to nodeodm.sh)
+# Set up working directory structure (same as nodeodm.sh)
 WORK_DIR=$(pwd)/nodeodm_workdir
 mkdir -p $WORK_DIR/data
 mkdir -p $WORK_DIR/tmp
@@ -47,28 +57,6 @@ chmod 777 $WORK_DIR/tmp
 
 echo "Directory structure created:"
 ls -la $WORK_DIR/
-
-# Load required modules (like in nodeodm.sh)
-echo "Loading required modules..."
-module load tacc-apptainer
-
-# Test apptainer and container availability
-echo "Testing Apptainer and NodeODM container..."
-if ! command -v apptainer &> /dev/null; then
-    echo "ERROR: apptainer command not found"
-    echo "Available modules:"
-    module avail 2>&1 | grep -i apptainer || echo "No apptainer modules found"
-    exit 1
-fi
-
-echo "Apptainer version:"
-apptainer --version
-
-echo "Testing container pull..."
-if ! apptainer exec docker://opendronemap/nodeodm:latest echo "Container test successful"; then
-    echo "ERROR: Failed to run test command in NodeODM container"
-    exit 1
-fi
 
 # TAP functions for reverse port forwarding
 function get_tap_certificate() {
@@ -143,10 +131,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Start NodeODM with the proven working configuration from nodeodm.sh
-echo "Starting NodeODM..."
-echo "Command: apptainer exec --writable-tmpfs --bind $WORK_DIR/tmp:/var/www/tmp:rw --bind $WORK_DIR/data:/var/www/data:rw docker://opendronemap/nodeodm:latest sh -c \"cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880\""
-
+# Start NodeODM with the exact working configuration from nodeodm.sh
+echo "Starting NodeODM with proven working setup..."
 apptainer exec \
     --writable-tmpfs \
     --bind $WORK_DIR/tmp:/var/www/tmp:rw \
@@ -204,8 +190,8 @@ else
         echo "  Port $NODEODM_PORT is not listening"
     fi
     
-    echo "Container processes:"
-    ps aux | grep -E "(apptainer|node)" | grep -v grep || echo "  No relevant processes found"
+    echo "Node processes:"
+    ps aux | grep -E "node" | grep -v grep || echo "  No node processes found"
     
     echo "Startup logs:"
     if [ -f $LOG_DIR/nodeodm.log ]; then
