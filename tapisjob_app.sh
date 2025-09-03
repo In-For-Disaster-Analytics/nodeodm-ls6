@@ -8,10 +8,9 @@ MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
 
 # Use Tapis environment variables for input/output directories  
-# INPUT_DIR="${_tapisExecSystemInputDir}"
-# OUTPUT_DIR="${_tapisExecSystemOutputDir}"
-INPUT_DIR="./input"
-OUTPUT_DIR="./output"
+INPUT_DIR="${_tapisExecSystemInputDir}"
+OUTPUT_DIR="${_tapisExecSystemOutputDir}"
+
 echo "=== NodeODM Tapis Processing (ZIP Runtime) ==="
 echo "Processing started by: ${_tapisJobOwner}"
 echo "Job UUID: ${_tapisJobUUID}"
