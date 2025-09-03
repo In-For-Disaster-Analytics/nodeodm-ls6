@@ -1,13 +1,13 @@
 {
   "id": "nodeodm-ls6",
-  "version": "1.0.2",
-  "description": "NodeODM photogrammetry processing on LS6 using Singularity.",
+  "version": "1.0.6-sha-a30b980",
+  "description": "NodeODM photogrammetry processing on LS6 using ZIP runtime.",
   "owner": "${apiUserId}",
   "enabled": true,
-  "runtime": "SINGULARITY",
-  "runtimeVersion": null,
-  "runtimeOptions": ["SINGULARITY_RUN"],
-  "containerImage": "docker://ghcr.io/in-for-disaster-analytics/nodeodm-ls6:sha-d1b6336",
+  "runtime": "ZIP",
+  "runtimeVersion": "",
+  "runtimeOptions": {},
+  "containerImage": "tapis://cloud.data/corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODM/nodeodm-ls6.zip",
   "jobType": "BATCH",
   "maxJobs": -1,
   "maxJobsPerUser": -1,
@@ -18,28 +18,28 @@
     "execSystemConstraints": null,
     "execSystemId": "ls6",
     "execSystemExecDir": "${JobWorkingDir}",
-    "execSystemInputDir": "${JobWorkingDir}",
+    "execSystemInputDir": "${JobWorkingDir}/inputs",
     "execSystemOutputDir": "${JobWorkingDir}/output",
     "execSystemLogicalQueue": "vm-small",
     "archiveSystemId": "cloud.data",
     "archiveSystemDir": "HOST_EVAL($HOME)/tapis-jobs-archive/${JobCreateDate}/${JobName}-${JobUUID}",
     "archiveOnAppError": true,
     "isMpi": false,
-    "mpiCmd": null,
-    "cmdPrefix": "mkdir $PWD/work $PWD/home $PWD/scratch;",
+    "mpiCmd": "",
+    "cmdPrefix": null,
     "parameterSet": {
       "appArgs": [
         {
-          "name": "Input Directory",
-          "description": "Directory containing input images",
-          "inputMode": "FIXED",
-          "arg": "/inputs"
+          "name": "max_concurrency",
+          "description": "Maximum number of concurrent processing tasks",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "4"
         },
         {
-          "name": "Output Directory", 
-          "description": "Directory for output files",
-          "inputMode": "FIXED",
-          "arg": "/outputs"
+          "name": "nodeodm_port",
+          "description": "NodeODM service port",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "3001"
         }
       ],
       "containerArgs": [
@@ -65,7 +65,7 @@
         },
         {
           "name": "TAP Session Substring",
-          "description": "TAP Functions require the substring 'tap_' and in the slurm job name in order to function.",
+          "description": "TAP Functions require the substring 'tap_' in the Slurm job name.",
           "inputMode": "FIXED",
           "arg": "--job-name ${JobName}-tap_",
           "notes": {

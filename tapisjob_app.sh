@@ -8,9 +8,10 @@ MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
 
 # Use Tapis environment variables for input/output directories  
-INPUT_DIR="${_tapisExecSystemInputDir}"
-OUTPUT_DIR="${_tapisExecSystemOutputDir}"
-
+# INPUT_DIR="${_tapisExecSystemInputDir}"
+# OUTPUT_DIR="${_tapisExecSystemOutputDir}"
+INPUT_DIR="./input"
+OUTPUT_DIR="./output"
 echo "=== NodeODM Tapis Processing (ZIP Runtime) ==="
 echo "Processing started by: ${_tapisJobOwner}"
 echo "Job UUID: ${_tapisJobUUID}"
@@ -131,14 +132,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Start NodeODM with the exact working configuration from nodeodm.sh
+# Create NodeODM configuration file
+echo "Creating NodeODM configuration..."
+cat > $WORK_DIR/nodeodm-config.json << EOF
+{
+  "port": $NODEODM_PORT,
+  "timeout": 0,
+  "maxConcurrency": $MAX_CONCURRENCY,
+  "maxImages": 0,
+  "cleanupTasksAfter": 2880,
+  "token": "",
+  "parallelQueueProcessing": 1,
+  "maxParallelTasks": 2,
+  "odm_path": "/code",
+  "logger": {
+    "level": "debug",
+    "logDirectory": "/tmp/logs"
+  }
+}
+EOF
+
+echo "NodeODM config created:"
+cat $WORK_DIR/nodeodm-config.json
+
+# Start NodeODM with the proven working configuration
 echo "Starting NodeODM with proven working setup..."
 apptainer exec \
     --writable-tmpfs \
+    --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
     --bind $WORK_DIR/tmp:/var/www/tmp:rw \
     --bind $WORK_DIR/data:/var/www/data:rw \
     docker://opendronemap/nodeodm:latest \
-    sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880" > $LOG_DIR/nodeodm.log 2>&1 &
+    sh -c "cd /var/www && mkdir -p /tmp/logs && node index.js --config /tmp/nodeodm-config.json" > $LOG_DIR/nodeodm.log 2>&1 &
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID"
@@ -152,14 +177,15 @@ if ! kill -0 $NODEODM_PID 2>/dev/null; then
     exit 1
 fi
 
-# Wait for NodeODM to start (same as nodeodm.sh)
+# Wait for NodeODM to start (from working setup)
 echo "Waiting for NodeODM to initialize..."
-sleep 30
+sleep 15
 
-# Test NodeODM connectivity
+# Test NodeODM connectivity (improved from working setup)
 echo "Testing NodeODM connectivity..."
 for i in {1..10}; do
-    if curl -s http://localhost:$NODEODM_PORT/info > /dev/null 2>&1; then
+    NODEODM_INFO_TEST=$(curl -s http://localhost:$NODEODM_PORT/info 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$NODEODM_INFO_TEST" ]; then
         echo "✓ NodeODM is responding on port $NODEODM_PORT"
         break
     else
@@ -168,12 +194,21 @@ for i in {1..10}; do
     fi
 done
 
-# Get NodeODM info
+# Final connectivity test and info gathering
 NODEODM_INFO=$(curl -s http://localhost:$NODEODM_PORT/info 2>/dev/null)
 if [ $? -eq 0 ] && [ -n "$NODEODM_INFO" ]; then
+    echo "✓ NodeODM connectivity confirmed"
     echo "NodeODM Info:"
     echo "$NODEODM_INFO"
     echo "$NODEODM_INFO" > $OUTPUT_DIR/nodeodm_info.json
+    
+    # Verify JSON response format
+    if echo "$NODEODM_INFO" | grep -q '"version"'; then
+        echo "✓ NodeODM API responding correctly"
+    else
+        echo "WARNING: NodeODM response format unexpected"
+        echo "Response: $NODEODM_INFO"
+    fi
 else
     echo "ERROR: NodeODM failed to start properly"
     echo "Process status:"

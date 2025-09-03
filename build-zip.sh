@@ -13,7 +13,7 @@ rm -f $PACKAGE_NAME
 
 # Create ZIP package with just the necessary files
 echo "Creating ZIP package..."
-zip -r $PACKAGE_NAME run.sh app.json README-ZIP.md
+zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md
 
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh $PACKAGE_NAME | awk '{print $5}')"
