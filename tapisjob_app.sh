@@ -319,12 +319,17 @@ function send_nodeodm_webhook() {
 # Send webhook notification after NodeODM is confirmed working
 send_nodeodm_webhook
 
-# Create a processing task
-echo "Creating processing task..."
-TASK_RESPONSE=$(curl -s -X POST \
+# Create a processing task and upload images in one go
+echo "Creating processing task with images..."
+cd $INPUT_DIR
+
+curl -s -X POST \
     -H "Content-Type: multipart/form-data" \
     -F "name=tapis_job_${_tapisJobUUID}" \
-    "http://localhost:$NODEODM_PORT/task/new?token=$TAP_TOKEN")
+    $(for image in $(find . -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.tif" -o -iname "*.tiff" \)); do
+        echo "-F images=@\"$image\" "
+    done) \
+    "http://localhost:$NODEODM_PORT/task/new?token=$TAP_TOKEN"
 
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to create task"
@@ -336,15 +341,6 @@ echo "$TASK_RESPONSE"
 TASK_UUID=$(echo "$TASK_RESPONSE" | grep -o '"uuid":"[^"]*"' | cut -d'"' -f4)
 echo "Created task with UUID: $TASK_UUID"
 
-# Upload images to the task
-echo "Uploading images to task..."
-cd $INPUT_DIR
-for image in $(find . -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" -o -name "*.tif" -o -name "*.tiff" -o -name "*.TIF" -o -name "*.TIFF"); do
-    echo "Uploading: $image"
-    curl -s -X POST \
-        -F "images=@$image" \
-        "http://localhost:$NODEODM_PORT/task/$TASK_UUID/upload?token=$TAP_TOKEN"
-done
 
 # Start processing
 echo "Starting task processing..."
