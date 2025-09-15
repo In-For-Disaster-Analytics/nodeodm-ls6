@@ -11,9 +11,9 @@ echo "Building NodeODM LS6 ZIP package (minimal)..."
 # Clean up any existing files
 rm -f $PACKAGE_NAME
 
-# Create ZIP package with just the necessary files
+# Create ZIP package with all necessary files including webhook scripts
 echo "Creating ZIP package..."
-zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md
+zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh
 
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh $PACKAGE_NAME | awk '{print $5}')"
@@ -24,9 +24,11 @@ unzip -l $PACKAGE_NAME
 
 echo ""
 echo "This ZIP contains:"
-echo "- run.sh: Main execution script that uses 'module load tacc-apptainer'"
+echo "- tapisjob_app.sh: Main execution script that uses 'module load tacc-apptainer'"
 echo "- app.json: Tapis app definition"
 echo "- README-ZIP.md: Documentation"
+echo "- register-node.sh: Webhook registration script for ClusterODM"
+echo "- deregister-node.sh: Webhook de-registration script for ClusterODM"
 
 echo ""
 echo "How it works:"

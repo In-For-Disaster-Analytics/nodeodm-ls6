@@ -89,15 +89,109 @@ function port_forwarding() {
     return 0
 }
 
+# Function to register NodeODM with ClusterODM
+register_with_clusterodm() {
+    echo "Registering NodeODM with ClusterODM..."
+
+    # Check if register script is available
+    if [ -f "./register-node.sh" ]; then
+        # Set up environment for registration
+        export CLUSTER_HOST="clusterodm.tacc.utexas.edu"
+        export CLUSTER_PORT="443"
+        export NODE_HOST="$NODE_HOSTNAME_DOMAIN"
+        export NODE_PORT="$NODEODM_PORT"
+        export TAPIS_TOKEN="slurm:${USER}:${SLURM_JOB_ID}"
+
+        echo "Using webhook registration..."
+        ./register-node.sh
+
+        if [ $? -eq 0 ]; then
+            echo "✅ Successfully registered NodeODM with ClusterODM"
+            echo "🔗 Node accessible at: $HOSTNAME:$NODEODM_PORT"
+        else
+            echo "⚠️ Registration failed, manual registration may be needed"
+            echo "📋 Add manually in ClusterODM admin: $HOSTNAME:$NODEODM_PORT"
+        fi
+    else
+        echo "Registration script not available"
+        echo "📋 Manual registration required:"
+        echo "   - Access: https://clusterodm.tacc.utexas.edu/admin"
+        echo "   - Add Node: $HOSTNAME:$NODEODM_PORT"
+    fi
+}
+
+# Function to de-register NodeODM from ClusterODM
+deregister_nodeodm() {
+    echo "De-registering NodeODM from ClusterODM..."
+
+    # Check if deregister script is available
+    if [ -f "./deregister-node.sh" ]; then
+        # Set up environment for de-registration
+        export CLUSTER_HOST="clusterodm.tacc.utexas.edu"
+        export CLUSTER_PORT="443"
+        export NODE_HOST="$NODE_HOSTNAME_DOMAIN"
+        export NODE_PORT="$NODEODM_PORT"
+        export TAPIS_TOKEN="slurm:${USER}:${SLURM_JOB_ID}"
+
+        echo "Using webhook de-registration..."
+        ./deregister-node.sh
+
+        if [ $? -eq 0 ]; then
+            echo "✅ Successfully de-registered NodeODM from ClusterODM"
+        else
+            echo "⚠️ De-registration failed, but continuing cleanup"
+        fi
+    else
+        echo "De-registration script not available, skipping"
+    fi
+}
+
+# Global variable to control deregistration behavior
+SHOULD_DEREGISTER_ON_EXIT=false
+
 # Function to cleanup on exit
 cleanup() {
-    echo "Cleaning up processes..."
+    local exit_code=$?
+    echo "Cleaning up processes (exit code: $exit_code)..."
+
+    # Only deregister if explicitly requested or if there was an error after successful startup
+    if [ "$SHOULD_DEREGISTER_ON_EXIT" = true ]; then
+        echo "Deregistration requested - removing node from ClusterODM..."
+        deregister_nodeodm
+    elif [ $exit_code -ne 0 ] && [ -n "$NODEODM_PID" ] && [ "$NODEODM_READY" = true ]; then
+        echo "NodeODM was running but exited with error - deregistering..."
+        deregister_nodeodm
+    else
+        echo "Skipping deregistration (normal startup exit or NodeODM never fully started)"
+        echo "  Exit code: $exit_code"
+        echo "  NodeODM ready: ${NODEODM_READY:-false}"
+        echo "  Should deregister: $SHOULD_DEREGISTER_ON_EXIT"
+    fi
+
+    # Clean up processes
+    if [ -n "$NODEODM_PID" ] && ps -p $NODEODM_PID > /dev/null 2>&1; then
+        echo "Stopping NodeODM process (PID: $NODEODM_PID)..."
+        kill $NODEODM_PID 2>/dev/null || true
+        sleep 5
+        kill -9 $NODEODM_PID 2>/dev/null || true
+    fi
+
     pkill -f "node.*index.js" 2>/dev/null || true
     pkill -f apptainer 2>/dev/null || true
     # Clean up SSH tunnels
     pkill -f "ssh.*login" 2>/dev/null || true
 }
-trap cleanup EXIT
+
+# Function to enable deregistration on cleanup
+enable_deregistration_on_exit() {
+    SHOULD_DEREGISTER_ON_EXIT=true
+    echo "Deregistration on cleanup enabled"
+}
+
+# Trap cleanup on specific signals and EXIT - DISABLED FOR DEBUGGING
+#trap cleanup EXIT
+#trap 'echo "Received SIGINT - enabling deregistration and exiting..."; enable_deregistration_on_exit; exit 130' INT
+#trap 'echo "Received SIGTERM - enabling deregistration and exiting..."; enable_deregistration_on_exit; exit 143' TERM
 
 # Start NodeODM with the proven working configuration
 echo "Starting NodeODM with proven working setup..."
@@ -111,33 +205,57 @@ apptainer exec \
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID"
 
-# Wait for NodeODM to start
+# Wait for NodeODM to start with longer initial delay
 echo "Waiting for NodeODM to initialize..."
-sleep 30
+sleep 60  # Increased from 30 to 60 seconds
 
-# Test NodeODM
+# Test NodeODM with more retries and better error handling
 echo "Testing NodeODM connectivity..."
-for i in {1..10}; do
-    if curl -s http://localhost:$NODEODM_PORT/info > /dev/null 2>&1; then
+NODEODM_READY=false
+for i in {1..20}; do  # Increased from 10 to 20 attempts
+    echo "  Attempt $i/20: Testing NodeODM on port $NODEODM_PORT..."
+    if curl -s --connect-timeout 10 --max-time 15 http://localhost:$NODEODM_PORT/info > /dev/null 2>&1; then
         echo "✓ NodeODM is responding on port $NODEODM_PORT"
+        NODEODM_READY=true
         break
     else
-        echo "  Attempt $i/10: NodeODM not ready yet..."
-        sleep 10
+        echo "  NodeODM not ready yet, waiting 15 seconds..."
+        sleep 15  # Increased from 10 to 15 seconds
     fi
 done
 
-# Get NodeODM info
-NODEODM_INFO=$(curl -s http://localhost:$NODEODM_PORT/info 2>/dev/null)
-if [ $? -eq 0 ]; then
-    echo "NodeODM Info:"
-    echo "$NODEODM_INFO"
-else
-    echo "ERROR: NodeODM failed to start properly"
-    echo "Check logs:"
-    tail -20 $LOG_DIR/nodeodm.log
-    exit 1
+# Check if NodeODM startup failed
+if [ "$NODEODM_READY" = false ]; then
+    echo "⚠️ NodeODM connectivity check failed after 20 attempts"
+    echo "Checking NodeODM process and logs..."
+    if ps -p $NODEODM_PID > /dev/null 2>&1; then
+        echo "NodeODM process is still running (PID: $NODEODM_PID)"
+        echo "This may be a connectivity issue rather than a startup failure"
+        echo "Proceeding with registration - ClusterODM will verify connectivity"
+    else
+        echo "ERROR: NodeODM process died during startup"
+        echo "Check logs for details:"
+        tail -20 $LOG_DIR/nodeodm.log
+        exit 1
+    fi
 fi
+
+# Get NodeODM info (only if connectivity check passed)
+if [ "$NODEODM_READY" = true ]; then
+    NODEODM_INFO=$(curl -s --connect-timeout 10 --max-time 15 http://localhost:$NODEODM_PORT/info 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$NODEODM_INFO" ]; then
+        echo "NodeODM Info:"
+        echo "$NODEODM_INFO"
+    else
+        echo "⚠️ Could not retrieve NodeODM info, but process is running"
+    fi
+else
+    echo "⚠️ Skipping NodeODM info retrieval due to connectivity issues"
+fi
+
+# Always attempt registration - ClusterODM will validate connectivity
+echo "Attempting ClusterODM registration..."
+register_with_clusterodm
 
 # Set up external access via reverse SSH tunneling
 echo "Setting up external web access..."
@@ -223,6 +341,10 @@ echo "========================================="
 echo "Monitoring NodeODM (Ctrl+C to stop)..."
 echo "Access connection info: $WORK_DIR/connection_info.txt"
 echo "========================================="
+
+# Now that NodeODM is fully operational, enable deregistration on exit
+# This prevents premature deregistration during startup issues
+enable_deregistration_on_exit
 
 # Simple monitoring loop
 while true; do

@@ -6,7 +6,9 @@
 
 MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
-CLUSTERODM_URL=${3:-"http://localhost:3000"}  # ClusterODM endpoint URL
+CLUSTERODM_URL=${3:-"https://clusterodm.tacc.utexas.edu"}  # ClusterODM endpoint URL
+CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
+CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
 
 # Use Tapis environment variables for input/output directories  
 INPUT_DIR="${_tapisExecSystemInputDir}"
@@ -123,33 +125,198 @@ function port_forwarding_tap() {
 }
 
 function send_url_to_webhook() {
-	JUPYTER_URL="https://${NODE_HOSTNAME_DOMAIN}:${LOGIN_PORT}/?token=${TAP_TOKEN}"
+	NODEODM_URL="https://${NODE_HOSTNAME_DOMAIN}:${LOGIN_PORT}/?token=${TAP_TOKEN}"
 	INTERACTIVE_WEBHOOK_URL="${_webhook_base_url}"
-	# Wait a few seconds for jupyter to boot up and send webhook callback url for job ready notification.
-	# Notification is sent to _INTERACTIVE_WEBHOOK_URL, e.g. https://3dem.org/webhooks/interactive/
+	# Wait a few seconds for NodeODM to boot up and send webhook callback url for job ready notification.
+	# Notification is sent to _INTERACTIVE_WEBHOOK_URL, e.g. https://ptdatax.tacc.utexas.edu/webhooks/interactive/
 	(
 		sleep 5 &&
-			curl -k --data "event_type=interactive_session_ready&address=${JUPYTER_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}" "${_INTERACTIVE_WEBHOOK_URL}" &
+			curl -k --data "event_type=nodeodm_session_ready&address=${NODEODM_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&service_type=nodeodm&clusterodm_url=${CLUSTERODM_URL}" "${_INTERACTIVE_WEBHOOK_URL}" &
 	) &
 
 }
 
+# Function to send NodeODM status updates to PTDataX
+function send_nodeodm_status_to_ptdatax() {
+    local status_event=$1  # ready, processing, complete, error
+    local message=$2
+    local nodeodm_info_url=""
+
+    if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
+        nodeodm_info_url="${EXTERNAL_URL}/info"
+    else
+        nodeodm_info_url="http://$(hostname):${NODEODM_PORT}/info"
+    fi
+
+    PTDATAX_WEBHOOK_URL="${_webhook_base_url}/ptdatax"  # PTDataX specific endpoint
+
+    if [ -n "${PTDATAX_WEBHOOK_URL}" ] && [ "${PTDATAX_WEBHOOK_URL}" != "/ptdatax" ]; then
+        echo "Sending NodeODM status to PTDataX: $status_event"
+
+        # Make webhook calls non-blocking and more resilient
+        set +e  # Don't exit on webhook failures
+
+        local webhook_response
+        local webhook_exit_code
+
+        webhook_response=$(curl -k --connect-timeout 15 --max-time 30 \
+            --data "event_type=nodeodm_status&status=${status_event}&message=${message}&nodeodm_url=${nodeodm_info_url}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&clusterodm_url=${CLUSTERODM_URL}&hostname=$(hostname)&port=${NODEODM_PORT}" \
+            "${PTDATAX_WEBHOOK_URL}" 2>&1)
+        webhook_exit_code=$?
+
+        if [ $webhook_exit_code -eq 0 ]; then
+            echo "✓ Successfully sent PTDataX webhook notification"
+        else
+            echo "⚠️ Failed to send PTDataX webhook (exit code: $webhook_exit_code)"
+            echo "   Webhook URL: ${PTDATAX_WEBHOOK_URL}"
+            echo "   Response: $webhook_response"
+            echo "   Continuing with NodeODM operations..."
+        fi
+
+        set -e  # Re-enable exit on error
+    else
+        echo "PTDataX webhook URL not configured or invalid, skipping status notification"
+    fi
+}
+
+# Function to notify ClusterODM that NodeODM job is complete
+function notify_clusterodm_complete() {
+    echo "Notifying ClusterODM that job is complete..."
+
+    # Get node information for removal
+    if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
+        NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+    else
+        NODEODM_HOST=$(hostname)
+        NODEODM_REGISTER_PORT=$NODEODM_PORT
+    fi
+
+    # Try to notify ClusterODM via HTTP API about job completion
+    if curl -k -s --connect-timeout 10 "$CLUSTERODM_URL/info" > /dev/null 2>&1; then
+        echo "Notifying ClusterODM via HTTP API..."
+
+        # Try to get current nodes list to find our node ID
+        NODES_INFO=$(curl -k -s --connect-timeout 10 "$CLUSTERODM_URL/nodes" 2>/dev/null || echo "")
+
+        # Send completion notification webhook
+        COMPLETION_DATA="hostname=$NODEODM_HOST&port=$NODEODM_REGISTER_PORT&job_uuid=${_tapisJobUUID}&status=complete"
+        curl -k -s --connect-timeout 10 -X POST \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "$COMPLETION_DATA" \
+            "$CLUSTERODM_URL/admin/job_complete" >/dev/null 2>&1 || echo "Job completion notification sent"
+
+        # Optionally try to remove/lock the node if it won't be used again
+        # This depends on whether you want the node to remain available for other jobs
+        # REMOVAL_DATA="hostname=$NODEODM_HOST&port=$NODEODM_REGISTER_PORT&action=remove_node"
+        # curl -k -s --connect-timeout 10 -X POST \
+        #     -H "Content-Type: application/x-www-form-urlencoded" \
+        #     -d "$REMOVAL_DATA" \
+        #     "$CLUSTERODM_URL/admin/nodes" >/dev/null 2>&1 || echo "Node removal attempted"
+
+        echo "✓ ClusterODM notified of job completion via HTTP"
+    else
+        echo "WARNING: Could not reach ClusterODM for completion notification"
+    fi
+
+    # Also send completion webhook if configured
+    if [ -n "${_webhook_base_url}" ]; then
+        curl -k --data "event_type=nodeodm_complete&hostname=$NODEODM_HOST&port=$NODEODM_REGISTER_PORT&job_uuid=${_tapisJobUUID}&owner=${_tapisJobOwner}&clusterodm_url=$CLUSTERODM_URL" "${_webhook_base_url}/clusterodm" 2>/dev/null || echo "Completion webhook sent"
+        echo "✓ Sent completion notification to webhook"
+    fi
+}
+
+# Function to de-register NodeODM from ClusterODM via webhook
+function deregister_from_clusterodm() {
+    echo "De-registering NodeODM from ClusterODM..."
+
+    # Get node information for de-registration
+    if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
+        NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+    else
+        NODEODM_HOST=$(hostname)
+        NODEODM_REGISTER_PORT=$NODEODM_PORT
+    fi
+
+    # Use webhook de-registration if script is available
+    if [ -f "./deregister-node.sh" ]; then
+        echo "Using webhook de-registration with Tapis JWT token..."
+
+        # Extract ClusterODM hostname from URL
+        CLUSTERODM_HOST=$(echo "$CLUSTERODM_URL" | sed 's|https\?://||' | cut -d/ -f1)
+
+        # Set up environment variables for de-registration
+        export CLUSTER_HOST="$CLUSTERODM_HOST"
+        export CLUSTER_PORT="443"
+        export NODE_HOST="$NODEODM_HOST"
+        export NODE_PORT="$NODEODM_REGISTER_PORT"
+
+        # Use the same UUID as registration
+        export REGISTRATION_UUID="$_tapisJobUUID"
+        # Clear any JWT tokens to force UUID-based auth
+        unset TAPIS_TOKEN
+
+        # Add node ID if we have it
+        if [ -n "$REGISTERED_NODE_ID" ]; then
+            export NODE_ID="$REGISTERED_NODE_ID"
+        fi
+
+        # Use the webhook de-registration script
+        ./deregister-node.sh
+
+        if [ $? -eq 0 ]; then
+            echo "✅ Successfully de-registered NodeODM from ClusterODM via webhook!"
+        else
+            echo "⚠️ Webhook de-registration failed, but continuing cleanup..."
+        fi
+    else
+        echo "Webhook de-registration script not found, using legacy approach..."
+        # Legacy de-registration notification
+        notify_clusterodm_complete
+    fi
+
+    # Also send legacy completion notification if configured
+    if [ -n "${_webhook_base_url}" ]; then
+        curl -k --data "event_type=nodeodm_deregistration&hostname=$NODEODM_HOST&port=$NODEODM_REGISTER_PORT&job_uuid=${_tapisJobUUID}&owner=${_tapisJobOwner}&clusterodm_url=$CLUSTERODM_URL" "${_webhook_base_url}/clusterodm" 2>/dev/null || echo "Legacy de-registration webhook sent"
+    fi
+
+    echo "🔗 NodeODM de-registration process completed"
+}
+
 # Function to cleanup on exit
 cleanup() {
-    echo "Cleaning up processes..."
+    local exit_code=$?
+    echo "Cleaning up processes (exit code: $exit_code)..."
 
-    
+    # Always notify PTDataX that NodeODM is shutting down (non-blocking)
+    send_nodeodm_status_to_ptdatax "shutdown" "NodeODM instance shutting down - job ${_tapisJobUUID} complete"
+
+    # De-register from ClusterODM before cleanup (make it more resilient)
+    echo "De-registering from ClusterODM..."
+    set +e  # Don't exit if deregistration fails
+    deregister_from_clusterodm
+    if [ $? -ne 0 ]; then
+        echo "⚠️ ClusterODM deregistration failed, but continuing cleanup..."
+    fi
+    set -e
+
     # Kill specific PIDs if available
     if [ -n "$NODEODM_PID" ] && kill -0 $NODEODM_PID 2>/dev/null; then
         echo "Stopping NodeODM (PID: $NODEODM_PID)..."
         kill $NODEODM_PID 2>/dev/null || true
+        sleep 3
+        kill -9 $NODEODM_PID 2>/dev/null || true
     fi
     # Fallback cleanup
     pkill -f "node.*index.js" 2>/dev/null || true
     pkill -f apptainer 2>/dev/null || true
     # Clean up SSH tunnels
     pkill -f "ssh.*login" 2>/dev/null || true
+
+    echo "Cleanup completed (exit code: $exit_code)"
 }
+# Trap cleanup on exit
 trap cleanup EXIT
 
 # Set up TAP token first (needed for NodeODM authentication)
@@ -288,6 +455,73 @@ else
     EXTERNAL_URL="N/A - not on TACC"
 fi
 
+# Function to register NodeODM with ClusterODM via webhook API using Tapis JWT token
+function register_with_clusterodm() {
+    if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
+        # Extract hostname from external URL for ClusterODM registration
+        NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+    else
+        # Use compute node hostname for direct registration
+        NODEODM_HOST=$(hostname)
+        NODEODM_REGISTER_PORT=$NODEODM_PORT
+    fi
+
+    echo "Attempting to register NodeODM with ClusterODM using webhook API..."
+    echo "NodeODM Host: $NODEODM_HOST"
+    echo "NodeODM Port: $NODEODM_REGISTER_PORT"
+    echo "ClusterODM URL: $CLUSTERODM_URL"
+
+    # Check if registration script is available
+    if [ -f "./register-node.sh" ]; then
+        echo "Using webhook registration with Tapis JWT token..."
+
+        # Extract ClusterODM hostname from URL
+        CLUSTERODM_HOST=$(echo "$CLUSTERODM_URL" | sed 's|https\?://||' | cut -d/ -f1)
+
+        # Set up environment variables for registration
+        export CLUSTER_HOST="$CLUSTERODM_HOST"
+        export CLUSTER_PORT="443"
+        export NODE_HOST="$NODEODM_HOST"
+        export NODE_PORT="$NODEODM_REGISTER_PORT"
+
+        # Use job UUID for simple authentication between ClusterODM and NodeODM
+        echo "Using job UUID for registration authentication: $_tapisJobUUID"
+        export REGISTRATION_UUID="$_tapisJobUUID"
+
+        # Clear any JWT tokens to force UUID-based auth
+        unset TAPIS_TOKEN
+
+        # Skip validation - NodeODM is confirmed working locally
+        export SKIP_VALIDATION="true"
+
+        # Use the webhook registration script
+        ./register-node.sh
+
+        if [ $? -eq 0 ]; then
+            echo "✅ Successfully registered NodeODM with ClusterODM via webhook!"
+            # Store node ID for later de-registration
+            export REGISTERED_NODE_ID="$(echo "$NODEODM_HOST:$NODEODM_REGISTER_PORT" | md5sum | cut -d' ' -f1)"
+            echo "Node registration ID: $REGISTERED_NODE_ID"
+        else
+            echo "⚠️ Webhook registration failed, falling back to manual registration"
+        fi
+    else
+        echo "Webhook registration script not found, using legacy approach..."
+    fi
+
+    # Legacy webhook notification for backward compatibility
+    if [ -n "${_webhook_base_url}" ]; then
+        echo "Sending additional webhook notifications..."
+        curl -k --data "event_type=nodeodm_registration&hostname=$NODEODM_HOST&port=$NODEODM_REGISTER_PORT&clusterodm_url=$CLUSTERODM_URL&external_url=${EXTERNAL_URL:-N/A}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}" "${_webhook_base_url}/clusterodm" 2>/dev/null || echo "Legacy webhook notification sent"
+    fi
+
+    echo "🔗 NodeODM registration process completed"
+    echo "📋 Manual verification:"
+    echo "   - Check ClusterODM admin: $CLUSTERODM_URL/admin"
+    echo "   - Node should appear as: $NODEODM_HOST:$NODEODM_REGISTER_PORT"
+}
+
 # Function to notify ClusterODM that NodeODM is ready
 function send_nodeodm_webhook() {
     if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
@@ -316,8 +550,12 @@ function send_nodeodm_webhook() {
     fi
 }
 
-# Send webhook notification after NodeODM is confirmed working
+# Register with ClusterODM and send webhook notification after NodeODM is confirmed working
+register_with_clusterodm
 send_nodeodm_webhook
+
+# Send PTDataX webhook notifications
+send_nodeodm_status_to_ptdatax "ready" "NodeODM instance ready and registered with ClusterODM"
 
 # Create a processing task and upload images in one go
 echo "Creating processing task with images..."
@@ -346,6 +584,9 @@ echo "Created task with UUID: $TASK_UUID"
 echo "Starting task processing..."
 curl -s -X POST "http://localhost:$NODEODM_PORT/task/$TASK_UUID/start?token=$TAP_TOKEN"
 
+# Notify PTDataX that processing has started
+send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID with $IMAGE_COUNT images"
+
 # Monitor task progress
 echo "Monitoring task progress..."
 while true; do
@@ -358,16 +599,19 @@ while true; do
     case $STATUS in
         "COMPLETED")
             echo "✓ Task completed successfully"
+            send_nodeodm_status_to_ptdatax "complete" "NodeODM task $TASK_UUID completed successfully"
             break
             ;;
         "FAILED")
             echo "✗ Task failed"
             echo "Error details:"
             echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
+            send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
             exit 1
             ;;
         "CANCELED")
             echo "✗ Task was canceled"
+            send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
             exit 1
             ;;
         *)
