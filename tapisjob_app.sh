@@ -186,7 +186,7 @@ function notify_clusterodm_complete() {
     # Get node information for removal
     if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
         NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
-        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1 | sed 's|/||g')
     else
         NODEODM_HOST=$(hostname)
         NODEODM_REGISTER_PORT=$NODEODM_PORT
@@ -233,7 +233,7 @@ function deregister_from_clusterodm() {
     # Get node information for de-registration
     if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
         NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
-        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1 | sed 's|/||g')
     else
         NODEODM_HOST=$(hostname)
         NODEODM_REGISTER_PORT=$NODEODM_PORT
@@ -251,9 +251,10 @@ function deregister_from_clusterodm() {
         export CLUSTER_PORT="443"
         export NODE_HOST="$NODEODM_HOST"
         export NODE_PORT="$NODEODM_REGISTER_PORT"
+        export NODE_TOKEN="$TAP_TOKEN"
 
         # Use the same UUID as registration
-        export REGISTRATION_UUID="$_tapisJobUUID"
+        export REGISTRATION_UUID="${_tapisJobUUID%-*}"
         # Clear any JWT tokens to force UUID-based auth
         unset TAPIS_TOKEN
 
@@ -460,7 +461,7 @@ function register_with_clusterodm() {
     if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
         # Extract hostname from external URL for ClusterODM registration
         NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
-        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1)
+        NODEODM_REGISTER_PORT=$(echo "$EXTERNAL_URL" | sed 's|.*:||' | cut -d? -f1 | sed 's|/||g')
     else
         # Use compute node hostname for direct registration
         NODEODM_HOST=$(hostname)
@@ -484,10 +485,11 @@ function register_with_clusterodm() {
         export CLUSTER_PORT="443"
         export NODE_HOST="$NODEODM_HOST"
         export NODE_PORT="$NODEODM_REGISTER_PORT"
+        export NODE_TOKEN="$TAP_TOKEN"
 
         # Use job UUID for simple authentication between ClusterODM and NodeODM
         echo "Using job UUID for registration authentication: $_tapisJobUUID"
-        export REGISTRATION_UUID="$_tapisJobUUID"
+        export REGISTRATION_UUID="${_tapisJobUUID%-*}"
 
         # Clear any JWT tokens to force UUID-based auth
         unset TAPIS_TOKEN

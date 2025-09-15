@@ -267,6 +267,7 @@ deregister_node() {
         http_code="${response: -3}"
         response="${response%???}"
 
+
         if [[ "$http_code" == "200" ]]; then
             local success=$(echo "$response" | grep -o '"success"[[:space:]]*:[[:space:]]*true' || echo "")
             if [[ -n "$success" ]]; then
@@ -330,17 +331,15 @@ register_node() {
     payload+='}'
 
     print_info "Attempting to register node $NODE_HOST:$NODE_PORT with cluster at $CLUSTER_HOST:$CLUSTER_PORT"
+    print_info "Will retry indefinitely every $RETRY_DELAY seconds until successful or manually canceled (Ctrl+C)"
 
-    for ((attempt=1; attempt<=RETRIES; attempt++)); do
-        print_info "Registration attempt $attempt/$RETRIES..."
+    local attempt=1
+    while true; do
+        print_info "Registration attempt $attempt (infinite retry - Ctrl+C to cancel)..."
 
         # Use curl to make the registration request
         local response
         local http_code
-
-        # Debug: Show the request details
-        print_info "Debug: Making POST request to: $url"
-        print_info "Debug: Payload: $payload"
 
         response=$(curl -s -w "%{http_code}" \
                        -X POST \
@@ -348,11 +347,11 @@ register_node() {
                        -d "$payload" \
                        --connect-timeout 30 \
                        --max-time 60 \
-                       --verbose \
-                       "$url" 2>&1)
+                       "$url" 2>/dev/null)
 
         http_code="${response: -3}"
         response="${response%???}"
+
 
         if [[ "$http_code" == "200" ]]; then
             local success=$(echo "$response" | grep -o '"success"[[:space:]]*:[[:space:]]*true' || echo "")
@@ -382,13 +381,13 @@ register_node() {
             print_error "Registration failed (HTTP $http_code): $response"
         fi
 
-        if [[ $attempt -lt $RETRIES ]]; then
-            print_info "Retrying in $RETRY_DELAY seconds..."
-            sleep "$RETRY_DELAY"
-        fi
+        print_info "Retrying in $RETRY_DELAY seconds..."
+        sleep "$RETRY_DELAY"
+        ((attempt++))
     done
 
-    print_error "Failed to register after $RETRIES attempts"
+    # This will never be reached due to infinite loop
+    print_error "Registration loop ended unexpectedly"
     return 1
 }
 
