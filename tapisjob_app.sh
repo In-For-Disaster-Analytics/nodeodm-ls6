@@ -21,6 +21,23 @@ echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "Max concurrency: $MAX_CONCURRENCY"
 echo "Port: $NODEODM_PORT"
+echo ""
+echo "🔐 Authentication Debug Info:"
+echo "  Tapis Job Owner: ${_tapisJobOwner}"
+echo "  Tapis Job UUID: ${_tapisJobUUID}"
+echo "  Environment variables containing 'tapis' or 'access':"
+env | grep -i -E "(tapis|access|token)" || echo "  No tapis/access/token env vars found"
+echo ""
+echo "  Checking _tapisAccessToken specifically:"
+if [ -n "${_tapisAccessToken}" ]; then
+    echo "  _tapisAccessToken is SET"
+    echo "  First 30 chars: ${_tapisAccessToken:0:30}..."
+    echo "  Token length: ${#_tapisAccessToken} characters"
+    echo "  Token starts with: ${_tapisAccessToken:0:10}"
+else
+    echo "  _tapisAccessToken is NOT SET or is empty"
+fi
+echo ""
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
@@ -37,18 +54,13 @@ echo "  User: $(whoami)"
 echo "  Hostname: $(hostname)"
 echo "  SLURM_JOB_ID: ${SLURM_JOB_ID}"
 
-# Validate input directory and count images
-if [ ! -d "$INPUT_DIR" ]; then
-    echo "ERROR: Input directory $INPUT_DIR not found!"
-    exit 1
-fi
-
-IMAGE_COUNT=$(find $INPUT_DIR -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" -o -name "*.tif" -o -name "*.tiff" -o -name "*.TIF" -o -name "*.TIFF" | wc -l)
-echo "Found $IMAGE_COUNT images in input directory"
-
-if [ $IMAGE_COUNT -eq 0 ]; then
-    echo "ERROR: No images found in input directory"
-    exit 1
+# Check if input directory exists, but don't require images yet
+if [ -d "$INPUT_DIR" ]; then
+    IMAGE_COUNT=$(find $INPUT_DIR -name "*.jpg" -o -name "*.jpeg" -o -name "*.JPG" -o -name "*.JPEG" -o -name "*.png" -o -name "*.PNG" -o -name "*.tif" -o -name "*.tiff" -o -name "*.TIF" -o -name "*.TIFF" | wc -l)
+    echo "Found $IMAGE_COUNT images in input directory"
+else
+    echo "No input directory found yet - NodeODM will wait for data from ClusterODM"
+    IMAGE_COUNT=0
 fi
 
 # Set up working directory structure (same as nodeodm.sh)
@@ -383,6 +395,7 @@ sleep 15
 echo "Testing NodeODM connectivity with TAP_TOKEN authentication..."
 for i in {1..10}; do
     # Test HTTP connection with token
+    echo "🔧 CURL TEST $i: curl -s 'http://localhost:$NODEODM_PORT/info?token=${TAP_TOKEN:0:10}...'"
     NODEODM_INFO_TEST=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$TAP_TOKEN" 2>/dev/null)
     if [ $? -eq 0 ] && [ -n "$NODEODM_INFO_TEST" ]; then
         echo "✓ NodeODM is responding with token authentication on port $NODEODM_PORT"
@@ -394,6 +407,7 @@ for i in {1..10}; do
 done
 
 # Final connectivity test and info gathering (using HTTP with token)
+echo "🔧 CURL FINAL TEST: curl -s 'http://localhost:$NODEODM_PORT/info?token=${TAP_TOKEN:0:10}...'"
 NODEODM_INFO=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$TAP_TOKEN" 2>/dev/null)
 if [ $? -eq 0 ] && [ -n "$NODEODM_INFO" ]; then
     echo "✓ NodeODM connectivity confirmed"
@@ -473,43 +487,113 @@ function register_with_clusterodm() {
     echo "NodeODM Port: $NODEODM_REGISTER_PORT"
     echo "ClusterODM URL: $CLUSTERODM_URL"
 
-    # Check if registration script is available
-    if [ -f "./register-node.sh" ]; then
-        echo "Using webhook registration with Tapis JWT token..."
+    # Use direct curl command for webhook registration
+    echo "Using webhook registration with Tapis JWT token..."
 
-        # Extract ClusterODM hostname from URL
-        CLUSTERODM_HOST=$(echo "$CLUSTERODM_URL" | sed 's|https\?://||' | cut -d/ -f1)
+    # Prepare registration data
+    REGISTRATION_UUID="${_tapisJobUUID%-*}"  # Remove any suffix like -007
 
-        # Set up environment variables for registration
-        export CLUSTER_HOST="$CLUSTERODM_HOST"
-        export CLUSTER_PORT="443"
-        export NODE_HOST="$NODEODM_HOST"
-        export NODE_PORT="$NODEODM_REGISTER_PORT"
-        export NODE_TOKEN="$TAP_TOKEN"
+    echo "Registration details:"
+    echo "  UUID: $REGISTRATION_UUID"
+    echo "  Host: $NODEODM_HOST"
+    echo "  Port: $NODEODM_REGISTER_PORT"
+    echo "  Token: ${TAP_TOKEN:0:10}..."
 
-        # Use job UUID for simple authentication between ClusterODM and NodeODM
-        echo "Using job UUID for registration authentication: $_tapisJobUUID"
-        export REGISTRATION_UUID="${_tapisJobUUID%-*}"
+    # Direct curl registration call with job UUID mapping
+    echo "Sending registration request to: $CLUSTERODM_URL/webhook/register-node"
+    echo "Debug: CLUSTERODM_URL='$CLUSTERODM_URL'"
+    echo "Debug: Full URL='$CLUSTERODM_URL/webhook/register-node'"
 
-        # Clear any JWT tokens to force UUID-based auth
-        unset TAPIS_TOKEN
+    # Prepare JSON payload with Tapis job owner for user-based authentication
+    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true}"
+    echo "Debug: JSON payload='$JSON_PAYLOAD'"
 
-        # Skip validation - NodeODM is confirmed working locally
-        export SKIP_VALIDATION="true"
+    # Show the exact curl command for manual testing
+    echo ""
+    echo "Manual registration command:"
+    echo "curl -X POST '$CLUSTERODM_URL/webhook/register-node' \\"
+    echo "  -H 'Content-Type: application/json' \\"
+    echo "  -H 'Authorization: Bearer \${_tapisAccessToken}' \\"
+    echo "  -d '$JSON_PAYLOAD'"
+    echo ""
 
-        # Use the webhook registration script
-        ./register-node.sh
+    # Check authentication options - prefer user ID over JWT token
+    if [ -n "${_tapisJobOwner}" ]; then
+        echo "✅ Using Tapis Job Owner for authentication: ${_tapisJobOwner}"
+        AUTH_METHOD="user-id"
+        EFFECTIVE_TOKEN=""  # Don't need JWT token when using user ID
+    elif [ -n "${_tapisAccessToken}" ] && [ "${_tapisAccessToken}" != "" ]; then
+        echo "✅ Using _tapisAccessToken for authentication"
+        AUTH_METHOD="jwt-token"
+        EFFECTIVE_TOKEN="${_tapisAccessToken}"
+    else
+        echo "❌ WARNING: Neither _tapisJobOwner nor _tapisAccessToken is available"
+        echo "Available Tapis environment variables:"
+        env | grep -E "^_tapis" | sort || echo "No _tapis* variables found"
+        echo ""
+        echo "Using user ID authentication as fallback..."
+        AUTH_METHOD="user-id"
+        EFFECTIVE_TOKEN=""
+    fi
 
-        if [ $? -eq 0 ]; then
-            echo "✅ Successfully registered NodeODM with ClusterODM via webhook!"
-            # Store node ID for later de-registration
-            export REGISTERED_NODE_ID="$(echo "$NODEODM_HOST:$NODEODM_REGISTER_PORT" | md5sum | cut -d' ' -f1)"
+    # Show the actual curl command being executed
+    echo "🔧 EXECUTING CURL COMMAND ($AUTH_METHOD authentication):"
+    echo "curl -s -w 'HTTP_CODE:%{http_code}' -X POST '$CLUSTERODM_URL/webhook/register-node' \\"
+    echo "  -H 'Content-Type: application/json' \\"
+    if [ -n "$EFFECTIVE_TOKEN" ]; then
+        echo "  -H 'Authorization: Bearer ${EFFECTIVE_TOKEN:0:20}...' \\"  # Show first 20 chars of token
+    else
+        echo "  (No Authorization header - using user ID in payload)"
+    fi
+    echo "  -d '$JSON_PAYLOAD'"
+    echo ""
+
+    # Execute curl with or without Authorization header based on auth method
+    if [ -n "$EFFECTIVE_TOKEN" ]; then
+        REGISTRATION_RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" -X POST "$CLUSTERODM_URL/webhook/register-node" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${EFFECTIVE_TOKEN}" \
+            -d "$JSON_PAYLOAD")
+    else
+        REGISTRATION_RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" -X POST "$CLUSTERODM_URL/webhook/register-node" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD")
+    fi
+
+    CURL_EXIT_CODE=$?
+
+    if [ $CURL_EXIT_CODE -ne 0 ]; then
+        echo "❌ Curl command failed with exit code: $CURL_EXIT_CODE"
+        echo "Registration response: $REGISTRATION_RESPONSE"
+        echo "   This may indicate network issues or ClusterODM is unreachable"
+        return 7
+    fi
+
+    # Extract HTTP code and response body
+    HTTP_CODE=$(echo "$REGISTRATION_RESPONSE" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
+    RESPONSE_BODY=$(echo "$REGISTRATION_RESPONSE" | sed 's/HTTP_CODE:[0-9]*$//')
+
+    echo "HTTP Code: $HTTP_CODE"
+    echo "Response: $RESPONSE_BODY"
+
+    if echo "$RESPONSE_BODY" | grep -q '"success":true'; then
+        echo "✅ Successfully registered NodeODM with ClusterODM via webhook!"
+        # Extract node ID from response if available
+        NODE_ID=$(echo "$RESPONSE_BODY" | grep -o '"nodeId":[0-9]*' | cut -d: -f2)
+        if [ -n "$NODE_ID" ]; then
+            export REGISTERED_NODE_ID="$NODE_ID"
             echo "Node registration ID: $REGISTERED_NODE_ID"
-        else
-            echo "⚠️ Webhook registration failed, falling back to manual registration"
         fi
     else
-        echo "Webhook registration script not found, using legacy approach..."
+        echo "⚠️ Webhook registration failed (HTTP: $HTTP_CODE)"
+        echo "Response: $RESPONSE_BODY"
+        echo "   Manual registration may be needed: $CLUSTERODM_URL/admin"
+
+        if [ "$HTTP_CODE" = "401" ]; then
+            echo "   Authentication failed - check UUID or token"
+        elif [ "$HTTP_CODE" = "500" ]; then
+            echo "   Server error - check ClusterODM logs"
+        fi
     fi
 
     # Legacy webhook notification for backward compatibility
@@ -532,72 +616,107 @@ function send_nodeodm_webhook() {
         # Fallback to localhost for testing
         NODEODM_URL="http://localhost:$NODEODM_PORT?token=$TAP_TOKEN"
     fi
-    
-    # Check if webhook URL is configured
-    if [ -n "${_webhook_base_url}" ]; then
+
+    echo "NodeODM webhook notification - URL: $NODEODM_URL"
+    echo "Webhook base URL configured: ${_webhook_base_url:-'not set'}"
+
+    # Check if webhook URL is configured and valid
+    if [ -n "${_webhook_base_url}" ] && [ "${_webhook_base_url}" != "" ]; then
         CLUSTERODM_WEBHOOK_URL="${_webhook_base_url}"
-        echo "Sending NodeODM ready notification to ClusterODM webhook..."
-        
+        echo "Sending NodeODM ready notification to webhook: $CLUSTERODM_WEBHOOK_URL"
+
+        # Prepare node info safely (avoid command substitution in curl)
+        NODE_INFO_SAFE=$(echo "$NODEODM_INFO" | tr -d '\n' | sed 's/"/\\"/g')
+
         # Wait a few seconds for NodeODM to be fully ready, then send webhook
         (
             sleep 10 &&
-            curl -k --data "event_type=nodeodm_ready&address=${NODEODM_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&max_concurrency=${MAX_CONCURRENCY}&node_info=$(echo "$NODEODM_INFO" | tr -d '\n')" "${CLUSTERODM_WEBHOOK_URL}" &
+            curl -k -s --data "event_type=nodeodm_ready&address=${NODEODM_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&max_concurrency=${MAX_CONCURRENCY}&node_info=${NODE_INFO_SAFE}" "${CLUSTERODM_WEBHOOK_URL}" >/dev/null 2>&1 || echo "Legacy webhook notification failed"
         ) &
-        
-        echo "Webhook notification scheduled for: $NODEODM_URL"
-        echo "Webhook endpoint: $CLUSTERODM_WEBHOOK_URL"
+
+        echo "Legacy webhook notification scheduled for: $NODEODM_URL"
+        echo "Legacy webhook endpoint: $CLUSTERODM_WEBHOOK_URL"
     else
-        echo "No webhook URL configured (_webhook_base_url not set)"
-        echo "NodeODM URL for manual registration: $NODEODM_URL"
+        echo "No legacy webhook URL configured (_webhook_base_url not set or empty)"
+        echo "Skipping legacy webhook notification"
+        echo "NodeODM URL for manual access: $NODEODM_URL"
     fi
 }
 
 # Register with ClusterODM and send webhook notification after NodeODM is confirmed working
+echo "=== Starting ClusterODM registration ==="
+set +e  # Temporarily disable exit on error to handle registration issues gracefully
 register_with_clusterodm
+REGISTRATION_EXIT_CODE=$?
+
+if [ $REGISTRATION_EXIT_CODE -ne 0 ]; then
+    echo "❌ Registration failed with exit code: $REGISTRATION_EXIT_CODE"
+    echo "Continuing without registration - NodeODM will still be accessible"
+else
+    echo "✅ Registration completed successfully"
+fi
+
 send_nodeodm_webhook
+set -e  # Re-enable exit on error
+echo "=== Registration phase completed ==="
 
 # Send PTDataX webhook notifications
 send_nodeodm_status_to_ptdatax "ready" "NodeODM instance ready and registered with ClusterODM"
 
-# Create a processing task and upload images in one go
-echo "Creating processing task with images..."
-cd $INPUT_DIR
+# NodeODM is now ready - it will wait for tasks from ClusterODM
+echo "NodeODM is ready and waiting for tasks from ClusterODM..."
+echo "No automatic task processing - ClusterODM will send tasks when ready"
 
-curl -s -X POST \
-    -H "Content-Type: multipart/form-data" \
-    -F "name=tapis_job_${_tapisJobUUID}" \
-    $(for image in $(find . -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.tif" -o -iname "*.tiff" \)); do
-        echo "-F images=@\"$image\" "
-    done) \
-    "http://localhost:$NODEODM_PORT/task/new?token=$TAP_TOKEN"
+# Monitor for tasks and wait
+echo "Monitoring for incoming tasks..."
+TASK_UUID=""
+MONITORING_TIMEOUT=0
+MAX_MONITORING_TIME=7200  # 2 hours max wait time
 
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to create task"
-    exit 1
-fi
+while true; do
+    # Check if any tasks have been submitted
+    echo "🔧 CURL TASK CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/list?token=${TAP_TOKEN:0:10}...'"
+    TASK_LIST_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/list?token=$TAP_TOKEN")
 
-# Extract task UUID
-echo "$TASK_RESPONSE"
-TASK_UUID=$(echo "$TASK_RESPONSE" | grep -o '"uuid":"[^"]*"' | cut -d'"' -f4)
-echo "Created task with UUID: $TASK_UUID"
+    if echo "$TASK_LIST_RESPONSE" | grep -q '"uuid"'; then
+        # Extract the first task UUID
+        TASK_UUID=$(echo "$TASK_LIST_RESPONSE" | grep -o '"uuid":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "Found task: $TASK_UUID"
 
+        # Get task info to check status
+        echo "🔧 CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
+        STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
+        STATUS=$(echo "$STATUS_RESPONSE" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
 
-# Start processing
-echo "Starting task processing..."
-curl -s -X POST "http://localhost:$NODEODM_PORT/task/$TASK_UUID/start?token=$TAP_TOKEN"
+        if [ "$STATUS" = "QUEUED" ] || [ "$STATUS" = "RUNNING" ]; then
+            echo "Task $TASK_UUID is processing, monitoring progress..."
+            send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID"
+            break
+        fi
+    fi
 
-# Notify PTDataX that processing has started
-send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID with $IMAGE_COUNT images"
+    # Check timeout
+    MONITORING_TIMEOUT=$((MONITORING_TIMEOUT + 30))
+    if [ $MONITORING_TIMEOUT -gt $MAX_MONITORING_TIME ]; then
+        echo "Timeout waiting for tasks from ClusterODM"
+        send_nodeodm_status_to_ptdatax "timeout" "NodeODM timed out waiting for tasks"
+        exit 1
+    fi
+
+    echo "Waiting for task from ClusterODM... (${MONITORING_TIMEOUT}s elapsed)"
+    sleep 30
+done
 
 # Monitor task progress
-echo "Monitoring task progress..."
+echo "Monitoring task progress for $TASK_UUID..."
 while true; do
+    echo "🔧 CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
     STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
     STATUS=$(echo "$STATUS_RESPONSE" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
     PROGRESS=$(echo "$STATUS_RESPONSE" | grep -o '"progress":[0-9]*' | cut -d':' -f2)
-    
+
     echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
-    
+
     case $STATUS in
         "COMPLETED")
             echo "✓ Task completed successfully"
@@ -624,9 +743,13 @@ done
 
 # Download results
 echo "Downloading results..."
+echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/all.zip 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=${TAP_TOKEN:0:10}...'"
 curl -s -o $OUTPUT_DIR/all.zip "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=$TAP_TOKEN"
+echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/orthophoto.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=${TAP_TOKEN:0:10}...'"
 curl -s -o $OUTPUT_DIR/orthophoto.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=$TAP_TOKEN"
+echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dsm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=${TAP_TOKEN:0:10}...'"
 curl -s -o $OUTPUT_DIR/dsm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$TAP_TOKEN"
+echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${TAP_TOKEN:0:10}...'"
 curl -s -o $OUTPUT_DIR/dtm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$TAP_TOKEN"
 
 # Generate processing report
