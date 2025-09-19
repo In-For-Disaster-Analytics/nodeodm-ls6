@@ -1,111 +1,163 @@
-This template is the first in a [series of tutorials](#next-tutorials) that will guide you through the process of creating a cookbook and running it on TACC systems. From simple ones that run a command to more complex ones that run a Python using conda or a Jupyter Notebook.
+# NodeODM-LS6
+
+**NodeODM Tapis Application for TACC Lonestar6**
+
+NodeODM-LS6 is a specialized Tapis application configuration for running NodeODM photogrammetry processing on TACC's Lonestar6 supercomputer. It provides a seamless integration between OpenDroneMap's NodeODM and high-performance computing resources through the Tapis API framework.
+
+## Features
+
+- **HPC Integration**: Native deployment on TACC Lonestar6 vm-small queue
+- **Automatic Scaling**: Resource allocation based on dataset size
+- **Web Interface**: Real-time access to NodeODM during processing
+- **Split-Merge Support**: Distributed processing for large datasets
+- **TAP Integration**: Secure web access via TACC Access Portal
 
 ## Requirements
 
-- A GitHub account
-- TACC account. If you don't have one, you can request one [here](https://accounts.tacc.utexas.edu/register)
-- To access TACC systems, you should have an [allocation](https://tacc.utexas.edu/use-tacc/allocations/)
-  - You can see your allocations [here](https://ptdatax.tacc.utexas.edu/workbench/allocations/approved)
-  - If you don't have an allocation, you can request one [here](https://portal.tacc.utexas.edu/allocation-request)
+- **TACC Account**: Valid account with Lonestar6 access
+- **Tapis Authentication**: JWT token for API access
+- **Allocation**: Active TACC allocation for compute resources
+- **ClusterODM-Tapis**: For distributed processing coordination
 
-## Template Overview
+## Architecture Overview
 
-This template creates a simple cookbook that will run a job on a TACC cluster using two parameters/arguments, Greeting and Target, and obtain the output via a UI, saving it to a file named out.txt.
+The application consists of three main components:
 
-![alt text](images/parameters.png)
+1. **`app.json`**: Tapis application definition with resource mappings and configuration
+2. **`tapisjob_app.sh`**: Main execution script that runs NodeODM on Lonestar6
+3. **`nodeodm.sh`**: Standalone SLURM script for direct NodeODM deployment
 
-![Show the output content ](images/output-content.png)
+### Application Configuration
 
-### How does it work?
+The `app.json` file defines resource allocation tiers based on dataset size:
 
-1. [`app.json`](app.json) file: contains the definition of the Tapis application, including the application's name, description, Docker image, input files, and advanced options.
-2. [`Dockerfile`](Dockerfile): a Docker image is built from the [`Dockerfile`](./Dockerfile). The Docker image defines the runtime environment for the application and the files that will be used by the application.
-3. [`run.sh`](run.sh): contains all the commands that will be executed on the TACC cluster.
-
-### Job run script
-
-The `run.sh` file is used to run the commands.
-
-```bash
-#!/bin/bash
-
-Greeting=$1
-Target=$2
-
-FULL_GREETING="${Greeting} ${Target}. My name is ${_tapisJobOwner}"
-echo "$FULL_GREETING"
-
-echo $FULL_GREETING > $_tapisExecSystemOutputDir/out.txt
+```json
+{
+  "id": "nodeodm-ls62",
+  "version": "1.0.8-clusterodm-integration",
+  "runtime": "ZIP",
+  "runtimeOptions": ["SINGULARITY_RUN"],
+  "containerImage": "https://github.com/wmobley/nodeodm-ls6/releases/download/v1.0.8/nodeodm-ls6-v1.0.8.zip"
+}
 ```
 
-The `run.sh` script receives two parameters, `Greeting` and `Target`, and uses them to create a message that will be saved to a file named `out.txt`.
+### Resource Mapping
 
-Also, the script uses the `_tapisExecSystemOutputDir` variable, which contains the path where the application writes the output files.
+Automatic resource selection based on image count:
 
-## Create your Cookbook
+| Images | Nodes | Cores/Node | Memory | Time Limit |
+|--------|-------|------------|--------|------------|
+| ≤50    | 1     | 16         | 30GB   | 2 hours    |
+| ≤150   | 1     | 16         | 30GB   | 4 hours    |
+| ≤300   | 2     | 16         | 30GB   | 6 hours    |
+| ≤600   | 3     | 16         | 30GB   | 10 hours   |
+| ≤1000  | 4     | 16         | 30GB   | 16 hours   |
+| ≤1500  | 6     | 16         | 30GB   | 20 hours   |
 
-### Create a new repository
+### Processing Pipeline
 
-1. Click on the "Use this template" button to create a new repository
-2. Fill in the form with the information for your new repository
+The `tapisjob_app.sh` script handles the complete processing workflow:
 
-### Build the Docker image
+1. **Environment Setup**: Load TACC modules and setup containerization
+2. **TAP Integration**: Generate authentication tokens for web access
+3. **NodeODM Launch**: Start NodeODM via Apptainer container
+4. **Task Processing**: Create and monitor photogrammetry tasks
+5. **Result Archival**: Package and transfer outputs to storage
 
-You can skip this step if you don't want to build the Docker image yourself. You can use the Docker image from the [Docker Hub](https://hub.docker.com/r/taccaci/cookbook-python).
+## Usage
 
-1. Clone the repository
-2. Build the Docker image using the command below
+### Via ClusterODM-Tapis (Recommended)
+
+NodeODM-LS6 is primarily designed to work with ClusterODM-Tapis for distributed processing:
+
+1. **Configure ClusterODM-Tapis** with your Tapis credentials
+2. **Submit tasks via WebODM** - datasets ≥50 images automatically trigger HPC processing
+3. **Monitor progress** via ClusterODM web interface
+4. **Download results** from WebODM once processing completes
+
+### Direct Tapis Submission
+
+For advanced users, you can submit jobs directly via Tapis API:
 
 ```bash
-docker build -t cookbook-python .
+# Submit job with image inputs
+curl -X POST "https://portals.tapis.io/v3/jobs" \
+  -H "X-Tapis-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @job_definition.json
 ```
 
-3. Push the Docker image to a container registry
+### Local Development
+
+For testing and development on Lonestar6:
 
 ```bash
-docker tag cookbook-python <your-registry>/cookbook-python
-docker push <your-registry>/cookbook-python
+# Direct SLURM submission
+sbatch nodeodm.sh 4 3001
+# Args: max_concurrency port
+
+# Multi-instance cluster
+sbatch single-node-multi-nodeodm.sh /path/to/images ProjectName 4
+# Args: images_directory project_name nodeodm_count
 ```
 
-### Modify the `app.json` file
+## Configuration
 
-Each app has a unique `id` and `description`. So, you should change these fields to match your app's name and description.
+### Resource Allocation
 
-1. Download the `app.json` file
-2. Change the values `id` and `description` fields with the name and description as you wish.
-3. If you built the Docker image, change the `containerImage` field with the image name you used.
+The application automatically selects resources based on input dataset size. Configuration is defined in the `imageSizeMapping` section of `app.json`.
 
-### Create a New Application on the Cookbook UI
+### Network Access
 
-1. Go to [Cookbook UI](https://in-for-disaster-analytics.github.io/cookbooks-ui/#/apps)
-2. Click on the "Create Application" button
-3. Fill in the form with the information from your `app.json` file
-4. Click "Create Application"
-5. A new application will be created, and you will be redirected to the application's page
+NodeODM instances are accessible via:
 
-### Run your Cookbook
+- **TAP Portal**: Automatic web interface via TACC Access Portal
+- **SSH Tunneling**: Manual port forwarding for local access
+- **ClusterODM**: Load-balanced access through cluster coordinator
 
-1. Go to the application's page on the Cookbook UI, if you are not already there
-2. Click on the "Run" button on the right side of the page. This will open the Portal UI
-3. Select the parameters for your job
-   ![Select the parameters](images/parameters.png)
+### File Management
 
-### Check the Output
+- **Input**: Images uploaded via Tapis file staging
+- **Processing**: Temporary storage on Lonestar6 scratch filesystem
+- **Output**: Results archived to TACC cloud storage or specified location
 
-1. After the job finishes, you can check the output by clicking on the "Output location" link on the job's page
-   ![Show a job finished ](images/job-finished.png)
-2. You will be redirected to the output location, where you can see the output files generated by the job
-   ![Show the output files ](images/output-files.png)
-3. Click on a file to see its content. In this case, the file is named `out.txt`
-   ![Show the output content ](images/output-content.png)
+## Integration with Distributed Processing
 
-## Next templates
+NodeODM-LS6 works seamlessly with the broader ODM-Suite ecosystem:
 
-- [Running a command](https://github.com/In-For-Disaster-Analytics/Cookbook-Docker-Template)
-- [Running a Python script using conda](https://github.com/In-For-Disaster-Analytics/Cookbook-Conda-Template)
-- [Running a Jupyter Notebook](https://github.com/In-For-Disaster-Analytics/Cookbook-Jupyter-Template)
+1. **WebODM**: User interface for task creation and management
+2. **ClusterODM-Tapis**: Coordination and load balancing
+3. **NodeODM-LS6**: HPC processing backend (this application)
+
+### Split-Merge Processing
+
+For large datasets, the system automatically:
+
+1. **Splits** images into overlapping submodels
+2. **Distributes** processing across multiple NodeODM instances
+3. **Merges** results with photogrammetric accuracy
+4. **Delivers** final outputs via WebODM interface
+
+## Monitoring and Debugging
+
+### Log Files
+- **SLURM logs**: Standard SLURM output files
+- **NodeODM logs**: Application-specific processing logs
+- **TAP logs**: Web access and tunneling logs
+
+### Common Issues
+- **Memory limits**: Increase `memoryMB` for large datasets
+- **Time limits**: Adjust `maxJobTime` for complex processing
+- **Network access**: Verify TAP configuration for web interface
+
+## Support
+
+For issues and questions:
+- **TACC Help Desk**: help@tacc.utexas.edu
+- **ODM Community**: [OpenDroneMap GitHub](https://github.com/OpenDroneMap)
+- **Documentation**: See `CLAUDE.md` for detailed technical information
 
 ## Authors
 
-William Mobley - wmobley@tacc.utexas.edu
-Maximiliano Osorio
+**William Mobley** - wmobley@tacc.utexas.edu
+*Research Associate, Texas Advanced Computing Center*
