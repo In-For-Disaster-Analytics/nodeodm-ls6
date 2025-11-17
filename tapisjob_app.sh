@@ -17,7 +17,7 @@ CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
 CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
 NODEODM_LOG_LEVEL=${NODEODM_LOG_LEVEL:-silly}
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -186,6 +186,21 @@ fi
 mkdir -p "$WORK_DIR"
 
 NODEODM_SOURCE_DIR="${SCRIPT_DIR}/nodeodm-source"
+# Optional: auto-sync NodeODM source from git when not bundled in the ZIP
+NODEODM_SOURCE_REPO=${NODEODM_SOURCE_REPO:-"https://github.com/wmobley/nodeodm.git"}
+NODEODM_SOURCE_REF=${NODEODM_SOURCE_REF:-"master"}
+
+# If nodeodm-source is missing, try to fetch it automatically
+if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
+    echo "NodeODM source not found locally; attempting git clone from $NODEODM_SOURCE_REPO (ref: $NODEODM_SOURCE_REF)..."
+    if command -v git >/dev/null 2>&1; then
+        git clone "$NODEODM_SOURCE_REPO" "$NODEODM_SOURCE_DIR" && \
+            (cd "$NODEODM_SOURCE_DIR" && git checkout "$NODEODM_SOURCE_REF") || true
+    else
+        echo "git not available; cannot auto-fetch NodeODM source."
+    fi
+fi
+
 NODEODM_RUNTIME_DIR=$WORK_DIR/runtime
 
 if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then

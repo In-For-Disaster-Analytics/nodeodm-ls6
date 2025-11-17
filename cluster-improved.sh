@@ -23,7 +23,7 @@ fi
 # Load required modules
 module load tacc-apptainer
 # Allow overriding the NodeODM image (default to our fork)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
 
 # Parse command line arguments
 IMAGES_DIR="$1"
