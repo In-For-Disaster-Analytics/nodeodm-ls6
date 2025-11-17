@@ -4,6 +4,10 @@
 # Based on the working nodeodm.sh configuration - using ZIP runtime to access TACC modules
 # ZIP runtime means we run directly on compute node and can use module load tacc-apptainer
 
+if [[ "${DEBUG:-0}" == "1" ]]; then
+    set -x
+fi
+
 if [[ -n "$1" ]]; then
     MAX_CONCURRENCY=$1
     MAX_CONCURRENCY_USER_SET=1
@@ -15,9 +19,11 @@ NODEODM_PORT=${2:-3001}
 CLUSTERODM_URL=${3:-"https://clusterodm.tacc.utexas.edu"}  # ClusterODM endpoint URL
 CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
 CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
-NODEODM_LOG_LEVEL=${NODEODM_LOG_LEVEL:-silly}
+NODEODM_LOG_LEVEL=silly
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
 NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
+# If set to 1, run directly from the container image code (no source overlay bind)
+NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-0}
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -148,8 +154,16 @@ if [[ "$NODEODM_CHILD" == "1" && -n "$NODEODM_CHILD_INDEX" ]]; then
     OUTPUT_DIR="${OUTPUT_DIR}/node-${NODEODM_CHILD_INDEX}"
 fi
 mkdir -p "$OUTPUT_DIR"
-LOG_DIR="${OUTPUT_DIR}/logs"
+# Write logs inside the output tree so they're easy to find per node/child
+LOG_DIR="$OUTPUT_DIR/logs"
 mkdir -p "$LOG_DIR"
+if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
+    LOG_FILE="${LOG_DIR}/${NODEODM_CHILD_INDEX}_nodeodm.log"
+else
+    LOG_FILE="${LOG_DIR}/nodeodm.log"
+fi
+# Start log file early so we always have something to tail
+echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_INDEX:-primary})" > "$LOG_FILE" || true
 
 # Load required modules (from working nodeodm.sh)
 echo "Loading required modules..."
@@ -170,7 +184,7 @@ else
     IMAGE_COUNT=0
 fi
 
-# Set up working directory structure with local NodeODM source
+# Set up working directory structure with local NodeODM source (or just data/logs when using image code)
 WORK_DIR_BASE="$(pwd)/nodeodm_workdir"
 if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
     WORK_DIR_SUFFIX="host${NODEODM_HOST_ID:-0}_${NODEODM_CHILD_INDEX}"
@@ -190,47 +204,65 @@ NODEODM_SOURCE_DIR="${SCRIPT_DIR}/nodeodm-source"
 NODEODM_SOURCE_REPO=${NODEODM_SOURCE_REPO:-"https://github.com/wmobley/nodeodm.git"}
 NODEODM_SOURCE_REF=${NODEODM_SOURCE_REF:-"master"}
 
-# If nodeodm-source is missing, try to fetch it automatically
-if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
-    echo "NodeODM source not found locally; attempting git clone from $NODEODM_SOURCE_REPO (ref: $NODEODM_SOURCE_REF)..."
-    if command -v git >/dev/null 2>&1; then
-        git clone "$NODEODM_SOURCE_REPO" "$NODEODM_SOURCE_DIR" && \
-            (cd "$NODEODM_SOURCE_DIR" && git checkout "$NODEODM_SOURCE_REF") || true
-    else
-        echo "git not available; cannot auto-fetch NodeODM source."
+# If nodeodm-source is missing, try to fetch it automatically (only when overlaying source)
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
+    if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
+        echo "NodeODM source not found locally; attempting git clone from $NODEODM_SOURCE_REPO (ref: $NODEODM_SOURCE_REF)..."
+        if command -v git >/dev/null 2>&1; then
+            git clone "$NODEODM_SOURCE_REPO" "$NODEODM_SOURCE_DIR" && \
+                (cd "$NODEODM_SOURCE_DIR" && git checkout "$NODEODM_SOURCE_REF") || true
+        else
+            echo "git not available; cannot auto-fetch NodeODM source."
+        fi
     fi
+else
+    echo "NODEODM_USE_IMAGE_SOURCE=1; will use container image code (no source overlay)."
 fi
 
 NODEODM_RUNTIME_DIR=$WORK_DIR/runtime
 
-if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
-    echo "ERROR: NodeODM source not found at $NODEODM_SOURCE_DIR"
-    echo "Please populate nodeodm-source/ with the NodeODM repository (package.json expected)."
-    exit 1
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
+    if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
+        echo "ERROR: NodeODM source not found at $NODEODM_SOURCE_DIR"
+        echo "Please populate nodeodm-source/ with the NodeODM repository (package.json expected), or set NODEODM_USE_IMAGE_SOURCE=1 to run from the container image code."
+        exit 1
+    fi
 fi
 
-echo "Preparing NodeODM runtime from source at $NODEODM_SOURCE_DIR"
+echo "Preparing NodeODM runtime (use_image_source=$NODEODM_USE_IMAGE_SOURCE)"
 rm -rf "$NODEODM_RUNTIME_DIR"
 mkdir -p "$NODEODM_RUNTIME_DIR"
 
-if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete "$NODEODM_SOURCE_DIR"/ "$NODEODM_RUNTIME_DIR"/
-else
-    cp -a "$NODEODM_SOURCE_DIR"/. "$NODEODM_RUNTIME_DIR"/
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete "$NODEODM_SOURCE_DIR"/ "$NODEODM_RUNTIME_DIR"/
+    else
+        cp -a "$NODEODM_SOURCE_DIR"/. "$NODEODM_RUNTIME_DIR"/
+    fi
 fi
 
+# Always provide writable dirs for data/tmp/logs
 mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
 chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp"
+
+# Determine bind args for apptainer (overlay source vs. image code)
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw"
+else
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw"
+fi
 
 echo "Runtime directory prepared:"
 ls -la "$NODEODM_RUNTIME_DIR"
 
-if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
-    echo "Extracting NodeODM node_modules from base container cache..."
-    apptainer exec docker://$NODEODM_IMAGE \
-        sh -c "cd /var/www && tar -cf - node_modules" | tar -xf - -C "$NODEODM_RUNTIME_DIR"
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
     if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
-        echo "WARNING: node_modules extraction failed; falling back to npm install during container startup."
+        echo "Extracting NodeODM node_modules from base container cache..."
+        apptainer exec docker://$NODEODM_IMAGE \
+            sh -c "cd /var/www && tar -cf - node_modules" | tar -xf - -C "$NODEODM_RUNTIME_DIR"
+        if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
+            echo "WARNING: node_modules extraction failed; falling back to npm install during container startup."
+        fi
     fi
 fi
 
@@ -312,45 +344,8 @@ function send_url_to_webhook() {
 
 # Function to send NodeODM status updates to PTDataX
 function send_nodeodm_status_to_ptdatax() {
-    local status_event=$1  # ready, processing, complete, error
-    local message=$2
-    local nodeodm_info_url=""
-
-    if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
-        nodeodm_info_url="${EXTERNAL_URL}/info"
-    else
-        nodeodm_info_url="http://$(hostname):${NODEODM_PORT}/info"
-    fi
-
-    PTDATAX_WEBHOOK_URL="${_webhook_base_url}/ptdatax"  # PTDataX specific endpoint
-
-    if [ -n "${PTDATAX_WEBHOOK_URL}" ]  ; then
-        echo "Sending NodeODM status to PTDataX: $status_event"
-
-        # Make webhook calls non-blocking and more resilient
-        set +e  # Don't exit on webhook failures
-
-        local webhook_response
-        local webhook_exit_code
-
-        webhook_response=$(curl -k --connect-timeout 15 --max-time 30 \
-            --data "event_type=nodeodm_status&status=${status_event}&message=${message}&nodeodm_url=${nodeodm_info_url}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&clusterodm_url=${CLUSTERODM_URL}&hostname=$(hostname)&port=${NODEODM_PORT}" \
-            "${PTDATAX_WEBHOOK_URL}" 2>&1)
-        webhook_exit_code=$?
-
-        if [ $webhook_exit_code -eq 0 ]; then
-            echo "✓ Successfully sent PTDataX webhook notification"
-        else
-            echo "⚠️ Failed to send PTDataX webhook (exit code: $webhook_exit_code)"
-            echo "   Webhook URL: ${PTDATAX_WEBHOOK_URL}"
-            echo "   Response: $webhook_response"
-            echo "   Continuing with NodeODM operations..."
-        fi
-
-        set -e  # Re-enable exit on error
-    else
-        echo "PTDataX webhook URL not configured or invalid, skipping status notification"
-    fi
+    # PTDATAX webhook disabled for local/idev testing
+    return 0
 }
 
 # Fetch incremental ODM console output via NodeODM API and append it to nodeodm.log (and output dir)
@@ -422,17 +417,17 @@ PY
         echo "===== ODM Task Output ($TASK_UUID) @ $timestamp (lines +${new_lines:-0}, start ${start_line}) ====="
         printf "%s\n" "$parsed_output"
         echo "===== End Task Output ====="
-    } >> "$LOG_DIR/nodeodm.log"
+    } >> "$LOG_FILE"
 
     if [ -n "$OUTPUT_DIR" ]; then
         mkdir -p "$OUTPUT_DIR"
         if printf "%s\n" "$parsed_output" >> "$OUTPUT_DIR/task_output.txt"; then
             :
         else
-            echo "⚠️ Failed to write $OUTPUT_DIR/task_output.txt" >> "$LOG_DIR/nodeodm.log"
+            echo "⚠️ Failed to write $OUTPUT_DIR/task_output.txt" >> "$LOG_FILE"
         fi
     else
-        echo "⚠️ OUTPUT_DIR not set, skipping task_output.txt copy" >> "$LOG_DIR/nodeodm.log"
+        echo "⚠️ OUTPUT_DIR not set, skipping task_output.txt copy" >> "$LOG_FILE"
     fi
 
     if [[ "$new_lines" =~ ^[0-9]+$ ]] && [ "$new_lines" -gt 0 ]; then
@@ -620,7 +615,7 @@ cat > $WORK_DIR/nodeodm-config.json << EOF
   "maxParallelTasks": $MAX_PARALLEL_TASKS,
   "odm_path": "/code",
   "logger": {
-    "level": "$NODEODM_LOG_LEVEL",
+    "level": "silly",
     "logDirectory": "/var/www/logs"
   }
 }
@@ -646,7 +641,7 @@ echo "Starting NodeODM with HTTP and TAP_TOKEN authentication..."
 apptainer exec \
     --writable-tmpfs \
     --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
-    --bind $NODEODM_RUNTIME_DIR:/var/www:rw \
+    $NODEODM_BIND_ARGS \
     docker://$NODEODM_IMAGE \
     sh -c "export PATH=/usr/local/bin:/usr/bin:/bin:/sbin:\$PATH; \
             # Newer NodeODM images use an nvm-based node and a node.sh wrapper. \
@@ -666,8 +661,11 @@ apptainer exec \
             echo \"Showing top of /var/www/index.js:\"; \
             head -n 40 /var/www/index.js || true; \
             cd /var/www && mkdir -p tmp data logs && \
-            if [ ! -d node_modules ]; then echo 'Installing NodeODM dependencies (npm install --production)...'; npm install --production || exit 1; fi && \
-            exec \"\$NODE_BIN\" index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL" > $LOG_DIR/nodeodm.log 2>&1 &
+            if [ ! -d node_modules ] || [ ! -f node_modules/winston/package.json ]; then \
+              echo 'Installing NodeODM dependencies (npm install --production)...'; \
+              npm install --production || exit 1; \
+            fi && \
+            exec \"\$NODE_BIN\" index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL" > $LOG_FILE 2>&1 &
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${TAP_TOKEN:0:8}...)"
@@ -677,7 +675,7 @@ sleep 5
 if ! kill -0 $NODEODM_PID 2>/dev/null; then
     echo "ERROR: NodeODM process died immediately"
     echo "Check startup logs:"
-    cat $LOG_DIR/nodeodm.log
+    cat $LOG_FILE
     exit 1
 fi
 
@@ -736,10 +734,10 @@ else
     ps aux | grep -E "node" | grep -v grep || echo "  No node processes found"
     
     echo "Startup logs:"
-    if [ -f $LOG_DIR/nodeodm.log ]; then
-        tail -50 $LOG_DIR/nodeodm.log
+    if [ -f $LOG_FILE ]; then
+        tail -50 $LOG_FILE
     else
-        echo "  No log file found at $LOG_DIR/nodeodm.log"
+        echo "  No log file found at $LOG_FILE"
     fi
     
     echo "Directory permissions:"
