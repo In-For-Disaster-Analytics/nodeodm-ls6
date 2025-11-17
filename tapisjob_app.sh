@@ -584,10 +584,24 @@ trap cleanup EXIT
 
 # Set up TAP token first (needed for NodeODM authentication)
 echo "Setting up TAP authentication..."
-load_tap_functions
-get_tap_certificate
-get_tap_token
-send_url_to_webhook
+if [[ "${SKIP_TAP_SETUP:-0}" == "1" ]]; then
+    echo "SKIP_TAP_SETUP=1; skipping TAP setup and generating dummy token"
+    TAP_TOKEN=${TAP_TOKEN:-"dummy-$(uuidgen 2>/dev/null || echo token)"}
+    LOGIN_PORT=${LOGIN_PORT:-0}
+else
+    if ! load_tap_functions; then
+        echo "WARNING: TAP functions unavailable; using dummy token"
+        TAP_TOKEN=${TAP_TOKEN:-"dummy-$(uuidgen 2>/dev/null || echo token)"}
+        LOGIN_PORT=${LOGIN_PORT:-0}
+    elif ! get_tap_certificate; then
+        echo "WARNING: TAP certificate missing; using dummy token"
+        TAP_TOKEN=${TAP_TOKEN:-"dummy-$(uuidgen 2>/dev/null || echo token)"}
+        LOGIN_PORT=${LOGIN_PORT:-0}
+    else
+        get_tap_token || TAP_TOKEN=${TAP_TOKEN:-"dummy-$(uuidgen 2>/dev/null || echo token)"}
+        send_url_to_webhook || true
+    fi
+fi
 echo "[TAP] Role=$NODEODM_ROLE PORT=$NODEODM_PORT LOGIN_PORT=${LOGIN_PORT:-n/a} TOKEN_PREFIX=${TAP_TOKEN:0:8}"
 
 
