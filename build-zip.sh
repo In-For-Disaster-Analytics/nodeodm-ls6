@@ -6,14 +6,22 @@ set -e
 
 PACKAGE_NAME="nodeodm-ls6.zip"
 
-echo "Building NodeODM LS6 ZIP package (minimal)..."
+if [ ! -d nodeodm-source ] || [ ! -f nodeodm-source/package.json ]; then
+  echo "ERROR: nodeodm-source directory missing or incomplete (package.json not found)."
+  echo "Populate nodeodm-source/ with the NodeODM repository (e.g. rsync from WebODM or git clone https://github.com/OpenDroneMap/NodeODM.git) before running this script."
+  exit 1
+fi
+
+echo "Building NodeODM LS6 ZIP package (full)..."
 
 # Clean up any existing files
 rm -f $PACKAGE_NAME
 
 # Create ZIP package with all necessary files including webhook scripts
 echo "Creating ZIP package..."
-zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh
+zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh nodeodm-source \
+  -x "nodeodm-source/.git/*" \
+  -x "nodeodm-source/node_modules/*"
 
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh $PACKAGE_NAME | awk '{print $5}')"
@@ -29,6 +37,7 @@ echo "- app.json: Tapis app definition"
 echo "- README-ZIP.md: Documentation"
 echo "- register-node.sh: Webhook registration script for ClusterODM"
 echo "- deregister-node.sh: Webhook de-registration script for ClusterODM"
+echo "- nodeodm-source/: NodeODM source code synced into the runtime"
 
 echo ""
 echo "How it works:"

@@ -4,15 +4,118 @@
 # Based on the working nodeodm.sh configuration - using ZIP runtime to access TACC modules
 # ZIP runtime means we run directly on compute node and can use module load tacc-apptainer
 
-MAX_CONCURRENCY=${1:-4}
+if [[ -n "$1" ]]; then
+    MAX_CONCURRENCY=$1
+    MAX_CONCURRENCY_USER_SET=1
+else
+    MAX_CONCURRENCY=${NODEODM_DEFAULT_MAX_CONCURRENCY:-12}
+    MAX_CONCURRENCY_USER_SET=0
+fi
 NODEODM_PORT=${2:-3001}
 CLUSTERODM_URL=${3:-"https://clusterodm.tacc.utexas.edu"}  # ClusterODM endpoint URL
 CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
 CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
+NODEODM_LOG_LEVEL=${NODEODM_LOG_LEVEL:-silly}
+# Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
+ORIGINAL_ARGS=("$@")
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # Use Tapis environment variables for input/output directories  
 INPUT_DIR="${_tapisExecSystemInputDir}"
 OUTPUT_DIR="${_tapisExecSystemOutputDir}"
+
+# Launch helper when multiple LS6 nodes are allocated
+function launch_multi_node_workers() {
+    if [[ "$NODEODM_CHILD" == "1" || -z "$SLURM_NODELIST" ]]; then
+        return 1
+    fi
+
+    if ! command -v scontrol >/dev/null 2>&1; then
+        echo "scontrol not available; cannot fan out across nodes."
+        return 1
+    fi
+
+    mapfile -t NODE_HOSTS < <(scontrol show hostnames "$SLURM_NODELIST")
+    local host_count=${#NODE_HOSTS[@]}
+    if [[ "$host_count" -eq 0 ]]; then
+        echo "No hosts reported by SLURM_NODELIST ($SLURM_NODELIST); skipping multi-node launch."
+        return 1
+    fi
+    echo "Multi-node host list (${host_count} hosts): ${NODE_HOSTS[*]}"
+
+    local replay_args=""
+    if [[ "${#ORIGINAL_ARGS[@]}" -gt 0 ]]; then
+        for arg in "${ORIGINAL_ARGS[@]}"; do
+            replay_args+=" $(printf '%q' "$arg")"
+        done
+    fi
+
+    local working_dir
+    working_dir=$(pwd)
+    echo "Launching one NodeODM instance per LS6 node..."
+    local child_pids=()
+
+    local host_idx=0
+    for host in "${NODE_HOSTS[@]}"; do
+        host_idx=$((host_idx + 1))
+        local child_index="${host_idx}-admin"
+        echo "[MULTI] Launching admin on $host (index $child_index)"
+        srun --overlap --nodes=1 --ntasks=1 -w "$host" bash -lc \
+            "cd \"$working_dir\" && NODEODM_CHILD=1 NODEODM_CHILD_INDEX=$child_index NODEODM_CHILD_ROLE=admin NODEODM_HOST_ID=$host_idx \"$SCRIPT_DIR/tapisjob_app.sh\"$replay_args" &
+        child_pids+=($!)
+    done
+
+    local status=0
+    for pid in "${child_pids[@]}"; do
+        wait "$pid"
+        local child_status=$?
+        if [[ "$child_status" -ne 0 && "$status" -eq 0 ]]; then
+            status=$child_status
+        fi
+    done
+
+    exit $status
+}
+
+launch_multi_node_workers || true
+
+NODEODM_ROLE_DEFAULT="${NODEODM_ROLE:-admin}"
+if [[ "$NODEODM_CHILD" == "1" && -n "$NODEODM_CHILD_ROLE" ]]; then
+    NODEODM_ROLE="$NODEODM_CHILD_ROLE"
+else
+    NODEODM_ROLE="$NODEODM_ROLE_DEFAULT"
+fi
+echo "[ROLE] NODEODM_CHILD=${NODEODM_CHILD:-0} CHILD_INDEX=${NODEODM_CHILD_INDEX:-primary} ROLE=$NODEODM_ROLE"
+
+if [[ "$NODEODM_ROLE" == "worker" ]]; then
+    if [[ "${NODEODM_DISABLE_IMPORT_PATH:-}" != "0" ]]; then
+        export NODEODM_DISABLE_IMPORT_PATH=1
+    fi
+    if [[ "$MAX_CONCURRENCY_USER_SET" -eq 0 ]]; then
+        MAX_CONCURRENCY=${NODEODM_WORKER_MAX_CONCURRENCY:-64}
+    fi
+else
+    NODEODM_ROLE="admin"
+    if [[ "$MAX_CONCURRENCY_USER_SET" -eq 0 ]]; then
+        MAX_CONCURRENCY=${NODEODM_ADMIN_MAX_CONCURRENCY:-16}
+    fi
+    if [[ -z "${NODEODM_DISABLE_IMPORT_PATH:-}" ]]; then
+        export NODEODM_DISABLE_IMPORT_PATH=0
+    fi
+fi
+
+if [[ "$NODEODM_ROLE" == "worker" && -n "$NODEODM_WORKER_ID" ]]; then
+    NODEODM_PORT=$((NODEODM_PORT + NODEODM_WORKER_ID))
+fi
+echo "[ROLE] Final role=$NODEODM_ROLE worker_id=${NODEODM_WORKER_ID:-0} host_id=${NODEODM_HOST_ID:-0} port=$NODEODM_PORT"
+
+echo "NodeODM role: $NODEODM_ROLE (max concurrency $MAX_CONCURRENCY)"
+if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
+    echo "Running on LS6 host: $(hostname) (child index $NODEODM_CHILD_INDEX, role=$NODEODM_ROLE, worker_id=${NODEODM_WORKER_ID:-0}, port=$NODEODM_PORT)"
+else
+    echo "Running on LS6 host: $(hostname) (primary instance)"
+fi
 
 echo "=== NodeODM Tapis Processing (ZIP Runtime) ==="
 echo "Processing started by: ${_tapisJobOwner}"
@@ -21,6 +124,7 @@ echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "Max concurrency: $MAX_CONCURRENCY"
 echo "Port: $NODEODM_PORT"
+echo "NodeODM image: $NODEODM_IMAGE"
 echo ""
 echo "🔐 Authentication Debug Info:"
 echo "  Tapis Job Owner: ${_tapisJobOwner}"
@@ -39,10 +143,13 @@ else
 fi
 echo ""
 
-# Create output directory
-mkdir -p $OUTPUT_DIR
-LOG_DIR=$OUTPUT_DIR/logs
-mkdir -p $LOG_DIR
+# Create output directory (namespace per LS6 node when fan-out is used)
+if [[ "$NODEODM_CHILD" == "1" && -n "$NODEODM_CHILD_INDEX" ]]; then
+    OUTPUT_DIR="${OUTPUT_DIR}/node-${NODEODM_CHILD_INDEX}"
+fi
+mkdir -p "$OUTPUT_DIR"
+LOG_DIR="${OUTPUT_DIR}/logs"
+mkdir -p "$LOG_DIR"
 
 # Load required modules (from working nodeodm.sh)
 echo "Loading required modules..."
@@ -63,15 +170,54 @@ else
     IMAGE_COUNT=0
 fi
 
-# Set up working directory structure (same as nodeodm.sh)
-WORK_DIR=$(pwd)/nodeodm_workdir
-mkdir -p $WORK_DIR/data
-mkdir -p $WORK_DIR/tmp
-chmod 777 $WORK_DIR/data
-chmod 777 $WORK_DIR/tmp
+# Set up working directory structure with local NodeODM source
+WORK_DIR_BASE="$(pwd)/nodeodm_workdir"
+if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
+    WORK_DIR_SUFFIX="host${NODEODM_HOST_ID:-0}_${NODEODM_CHILD_INDEX}"
+    if [[ "$NODEODM_ROLE" == "worker" && -n "$NODEODM_WORKER_ID" ]]; then
+        WORK_DIR_SUFFIX="${WORK_DIR_SUFFIX}_w${NODEODM_WORKER_ID}"
+    elif [[ "$NODEODM_ROLE" == "admin" ]]; then
+        WORK_DIR_SUFFIX="${WORK_DIR_SUFFIX}_admin"
+    fi
+    WORK_DIR="${WORK_DIR_BASE}_${WORK_DIR_SUFFIX}"
+else
+    WORK_DIR="${WORK_DIR_BASE}"
+fi
+mkdir -p "$WORK_DIR"
 
-echo "Directory structure created:"
-ls -la $WORK_DIR/
+NODEODM_SOURCE_DIR="${SCRIPT_DIR}/nodeodm-source"
+NODEODM_RUNTIME_DIR=$WORK_DIR/runtime
+
+if [ ! -d "$NODEODM_SOURCE_DIR" ] || [ ! -f "$NODEODM_SOURCE_DIR/package.json" ]; then
+    echo "ERROR: NodeODM source not found at $NODEODM_SOURCE_DIR"
+    echo "Please populate nodeodm-source/ with the NodeODM repository (package.json expected)."
+    exit 1
+fi
+
+echo "Preparing NodeODM runtime from source at $NODEODM_SOURCE_DIR"
+rm -rf "$NODEODM_RUNTIME_DIR"
+mkdir -p "$NODEODM_RUNTIME_DIR"
+
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$NODEODM_SOURCE_DIR"/ "$NODEODM_RUNTIME_DIR"/
+else
+    cp -a "$NODEODM_SOURCE_DIR"/. "$NODEODM_RUNTIME_DIR"/
+fi
+
+mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
+chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp"
+
+echo "Runtime directory prepared:"
+ls -la "$NODEODM_RUNTIME_DIR"
+
+if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
+    echo "Extracting NodeODM node_modules from base container cache..."
+    apptainer exec docker://$NODEODM_IMAGE \
+        sh -c "cd /var/www && tar -cf - node_modules" | tar -xf - -C "$NODEODM_RUNTIME_DIR"
+    if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
+        echo "WARNING: node_modules extraction failed; falling back to npm install during container startup."
+    fi
+fi
 
 # TAP functions for reverse port forwarding
 function get_tap_certificate() {
@@ -94,8 +240,8 @@ function get_tap_token() {
         exit 1
     fi
     echo "TACC: using token ${TAP_TOKEN}"
-    LOGIN_PORT=$(tap_get_port)
     export TAP_TOKEN
+    LOGIN_PORT=$(tap_get_port)
     export LOGIN_PORT
 }
 
@@ -116,6 +262,7 @@ function load_tap_functions() {
 
 function port_forwarding_tap() {
     LOCAL_PORT=$NODEODM_PORT
+    echo "[TAP] (${NODEODM_CHILD_INDEX:-primary}) attempting TAP tunnel on LOGIN_PORT=${LOGIN_PORT:-n/a} for local port $LOCAL_PORT"
     # Disable exit on error so we can check the ssh tunnel status.
     set +e
     for i in $(seq 2); do
@@ -162,7 +309,7 @@ function send_nodeodm_status_to_ptdatax() {
 
     PTDATAX_WEBHOOK_URL="${_webhook_base_url}/ptdatax"  # PTDataX specific endpoint
 
-    if [ -n "${PTDATAX_WEBHOOK_URL}" ] && [ "${PTDATAX_WEBHOOK_URL}" != "/ptdatax" ]; then
+    if [ -n "${PTDATAX_WEBHOOK_URL}" ]  ; then
         echo "Sending NodeODM status to PTDataX: $status_event"
 
         # Make webhook calls non-blocking and more resilient
@@ -188,6 +335,99 @@ function send_nodeodm_status_to_ptdatax() {
         set -e  # Re-enable exit on error
     else
         echo "PTDataX webhook URL not configured or invalid, skipping status notification"
+    fi
+}
+
+# Fetch incremental ODM console output via NodeODM API and append it to nodeodm.log (and output dir)
+function stream_task_output() {
+    if [ -z "$TASK_UUID" ]; then
+        return
+    fi
+
+    local start_line=${TASK_OUTPUT_LINE:-0}
+    local raw_output
+    raw_output=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/output?token=$TAP_TOKEN&line=$start_line" 2>/dev/null || echo "[]")
+
+    local python_result=""
+    local parsed_output="$raw_output"
+    local new_lines=0
+
+    if command -v python3 >/dev/null 2>&1; then
+        python_result=$(
+            RAW_OUTPUT="$raw_output" python3 <<'PY'
+import json, os, sys
+
+data = os.environ.get("RAW_OUTPUT", "")
+if not data.strip():
+    print("__COUNT__=0")
+    sys.exit(0)
+try:
+    payload = json.loads(data)
+except Exception:
+    print("__COUNT__=0")
+    print(data.strip())
+    sys.exit(0)
+
+
+def normalize(value):
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, dict):
+        # Common NodeODM shapes
+        for key in ("data", "output", "lines"):
+            if key in value:
+                nested = value[key]
+                if isinstance(nested, list):
+                    return [str(item) for item in nested]
+                return [str(nested)]
+        return [json.dumps(value)]
+    return [str(value)]
+
+
+lines = normalize(payload)
+print(f"__COUNT__={len(lines)}")
+for line in lines:
+    print(line)
+PY
+        )
+        if [ -n "$python_result" ]; then
+            new_lines=$(echo "$python_result" | awk -F= '/^__COUNT__/ {print $2; exit}')
+            parsed_output=$(echo "$python_result" | sed '1d')
+        fi
+    fi
+
+    if [ -z "$parsed_output" ] || [ "$parsed_output" = "[]" ]; then
+        return
+    fi
+
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    {
+        echo "===== ODM Task Output ($TASK_UUID) @ $timestamp (lines +${new_lines:-0}, start ${start_line}) ====="
+        printf "%s\n" "$parsed_output"
+        echo "===== End Task Output ====="
+    } >> "$LOG_DIR/nodeodm.log"
+
+    if [ -n "$OUTPUT_DIR" ]; then
+        mkdir -p "$OUTPUT_DIR"
+        if printf "%s\n" "$parsed_output" >> "$OUTPUT_DIR/task_output.txt"; then
+            :
+        else
+            echo "⚠️ Failed to write $OUTPUT_DIR/task_output.txt" >> "$LOG_DIR/nodeodm.log"
+        fi
+    else
+        echo "⚠️ OUTPUT_DIR not set, skipping task_output.txt copy" >> "$LOG_DIR/nodeodm.log"
+    fi
+
+    if [[ "$new_lines" =~ ^[0-9]+$ ]] && [ "$new_lines" -gt 0 ]; then
+        TASK_OUTPUT_LINE=$((start_line + new_lines))
+    else
+        local appended_lines
+        appended_lines=$(printf "%s\n" "$parsed_output" | wc -l | tr -d ' ')
+        if [[ "$appended_lines" =~ ^[0-9]+$ ]] && [ "$appended_lines" -gt 0 ]; then
+            TASK_OUTPUT_LINE=$((start_line + appended_lines))
+        fi
     fi
 }
 
@@ -338,10 +578,21 @@ load_tap_functions
 get_tap_certificate
 get_tap_token
 send_url_to_webhook
+echo "[TAP] Role=$NODEODM_ROLE PORT=$NODEODM_PORT LOGIN_PORT=${LOGIN_PORT:-n/a} TOKEN_PREFIX=${TAP_TOKEN:0:8}"
 
 
 # Create NodeODM configuration file with TAP_TOKEN
-echo "Creating NodeODM configuration..."
+PARALLEL_QUEUE=${NODEODM_PARALLEL_QUEUE:-$MAX_CONCURRENCY}
+if [ "$PARALLEL_QUEUE" -lt 2 ]; then
+    PARALLEL_QUEUE=2
+fi
+
+MAX_PARALLEL_TASKS=${NODEODM_MAX_PARALLEL_TASKS:-$MAX_CONCURRENCY}
+if [ "$MAX_PARALLEL_TASKS" -lt 1 ]; then
+    MAX_PARALLEL_TASKS=1
+fi
+
+echo "Creating NodeODM configuration (maxConcurrency=$MAX_CONCURRENCY, maxParallelTasks=$MAX_PARALLEL_TASKS, parallelQueueProcessing=$PARALLEL_QUEUE)..."
 cat > $WORK_DIR/nodeodm-config.json << EOF
 {
   "port": $NODEODM_PORT,
@@ -350,18 +601,28 @@ cat > $WORK_DIR/nodeodm-config.json << EOF
   "maxImages": 0,
   "cleanupTasksAfter": 2880,
   "token": "$TAP_TOKEN",
-  "parallelQueueProcessing": 1,
-  "maxParallelTasks": 2,
+  "parallelQueueProcessing": $PARALLEL_QUEUE,
+  "maxParallelTasks": $MAX_PARALLEL_TASKS,
   "odm_path": "/code",
   "logger": {
-    "level": "debug",
-    "logDirectory": "/tmp/logs"
+    "level": "$NODEODM_LOG_LEVEL",
+    "logDirectory": "/var/www/logs"
   }
 }
 EOF
 
 echo "NodeODM config created:"
 cat $WORK_DIR/nodeodm-config.json
+
+# Configure shared filesystem roots for import_path passthrough (can be disabled)
+SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media}"
+if [[ "${NODEODM_DISABLE_IMPORT_PATH:-0}" == "1" ]]; then
+    unset NODEODM_IMPORT_PATH_ROOTS
+    echo "NODEODM import_path passthrough disabled (NODEODM_DISABLE_IMPORT_PATH=1)"
+else
+    export NODEODM_IMPORT_PATH_ROOTS="$SHARED_IMPORT_ROOT"
+    echo "NODEODM import_path roots: ${NODEODM_IMPORT_PATH_ROOTS}"
+fi
 
 echo "Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)"
 
@@ -370,10 +631,28 @@ echo "Starting NodeODM with HTTP and TAP_TOKEN authentication..."
 apptainer exec \
     --writable-tmpfs \
     --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
-    --bind $WORK_DIR/tmp:/var/www/tmp:rw \
-    --bind $WORK_DIR/data:/var/www/data:rw \
-    docker://opendronemap/nodeodm:latest \
-    sh -c "cd /var/www && mkdir -p /tmp/logs && node index.js --config /tmp/nodeodm-config.json" > $LOG_DIR/nodeodm.log 2>&1 &
+    --bind $NODEODM_RUNTIME_DIR:/var/www:rw \
+    docker://$NODEODM_IMAGE \
+    sh -c "export PATH=/usr/local/bin:/usr/bin:/bin:/sbin:\$PATH; \
+            # Newer NodeODM images use an nvm-based node and a node.sh wrapper. \
+            NODE_BIN=\$(command -v node || command -v nodejs || find /usr/local/nvm -type f -path '*bin/node' 2>/dev/null | head -n1); \
+            if [ -z \"\$NODE_BIN\" ] && [ -x /usr/local/bin/node.sh ]; then \
+                echo \"node not found in PATH; falling back to /usr/local/bin/node.sh wrapper\"; \
+                NODE_BIN=\"/usr/local/bin/node.sh\"; \
+            fi; \
+            if [ -z \"\$NODE_BIN\" ]; then \
+                echo \"ERROR: node binary not found inside container\"; \
+                exit 127; \
+            fi; \
+            export PATH=\$(dirname \"\$NODE_BIN\"):\$PATH; \
+            echo \"Using node binary: \$NODE_BIN\"; \
+            echo \"Listing /var/www to confirm bound source:\"; \
+            ls -la /var/www | head -40; \
+            echo \"Showing top of /var/www/index.js:\"; \
+            head -n 40 /var/www/index.js || true; \
+            cd /var/www && mkdir -p tmp data logs && \
+            if [ ! -d node_modules ]; then echo 'Installing NodeODM dependencies (npm install --production)...'; npm install --production || exit 1; fi && \
+            exec \"\$NODE_BIN\" index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL" > $LOG_DIR/nodeodm.log 2>&1 &
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${TAP_TOKEN:0:8}...)"
@@ -472,6 +751,7 @@ fi
 
 # Function to register NodeODM with ClusterODM via webhook API using Tapis JWT token
 function register_with_clusterodm() {
+    echo "[REGISTER] Starting registration flow (role=$NODEODM_ROLE child=${NODEODM_CHILD_INDEX:-primary} host=$(hostname) port=$NODEODM_PORT)"
     if [ -n "$EXTERNAL_URL" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ] && [ "$EXTERNAL_URL" != "N/A - not on TACC" ]; then
         # Extract hostname from external URL for ClusterODM registration
         NODEODM_HOST=$(echo "$EXTERNAL_URL" | sed 's|http[s]*://||' | cut -d: -f1)
@@ -513,21 +793,21 @@ function register_with_clusterodm() {
     echo "Manual registration command:"
     echo "curl -X POST '$CLUSTERODM_URL/webhook/register-node' \\"
     echo "  -H 'Content-Type: application/json' \\"
-    echo "  -H 'Authorization: Bearer \${_tapisAccessToken}' \\"
+    echo "  -H 'Authorization: Bearer \${TAPIS_ACCESS_TOKEN}' \\"
     echo "  -d '$JSON_PAYLOAD'"
     echo ""
 
     # Check authentication options - prefer user ID over JWT token
-    if [ -n "${_tapisJobOwner}" ]; then
+    if [ -n "${TAPIS_ACCESS_TOKEN}" ] && [ "${TAPIS_ACCESS_TOKEN}" != "" ]; then
+        echo "✅ Using TAPIS_ACCESS_TOKEN for authentication"
+        AUTH_METHOD="jwt-token"
+        EFFECTIVE_TOKEN="${TAPIS_ACCESS_TOKEN}"
+    elif [ -n "${_tapisJobOwner}" ]; then
         echo "✅ Using Tapis Job Owner for authentication: ${_tapisJobOwner}"
         AUTH_METHOD="user-id"
-        EFFECTIVE_TOKEN=""  # Don't need JWT token when using user ID
-    elif [ -n "${_tapisAccessToken}" ] && [ "${_tapisAccessToken}" != "" ]; then
-        echo "✅ Using _tapisAccessToken for authentication"
-        AUTH_METHOD="jwt-token"
-        EFFECTIVE_TOKEN="${_tapisAccessToken}"
+        EFFECTIVE_TOKEN=""
     else
-        echo "❌ WARNING: Neither _tapisJobOwner nor _tapisAccessToken is available"
+        echo "❌ WARNING: Neither _tapisJobOwner nor TAPIS_ACCESS_TOKEN is available"
         echo "Available Tapis environment variables:"
         env | grep -E "^_tapis" | sort || echo "No _tapis* variables found"
         echo ""
@@ -670,8 +950,26 @@ echo "No automatic task processing - ClusterODM will send tasks when ready"
 # Monitor for tasks and wait
 echo "Monitoring for incoming tasks..."
 TASK_UUID=""
+TASK_OUTPUT_LINE=0
 MONITORING_TIMEOUT=0
-MAX_MONITORING_TIME=7200  # 2 hours max wait time
+
+# Convert SLURM_TIMELIMIT to seconds (handles HH:MM:SS or minutes)
+DEFAULT_MONITOR_LIMIT=$((2 * 60 * 60))  # fall back to 2 hours
+if [[ "$SLURM_TIMELIMIT" =~ ^[0-9]+$ ]]; then
+    MAX_MONITORING_TIME=$((SLURM_TIMELIMIT * 60))
+elif [[ "$SLURM_TIMELIMIT" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+    HOURS=${BASH_REMATCH[1]}
+    MINUTES=${BASH_REMATCH[2]}
+    SECONDS=${BASH_REMATCH[3]}
+    MAX_MONITORING_TIME=$((10#$HOURS * 3600 + 10#$MINUTES * 60 + 10#$SECONDS))
+else
+    MAX_MONITORING_TIME=$DEFAULT_MONITOR_LIMIT
+fi
+
+# Ensure positive integer
+if ! [[ "$MAX_MONITORING_TIME" =~ ^[0-9]+$ ]] || [ "$MAX_MONITORING_TIME" -le 0 ]; then
+    MAX_MONITORING_TIME=$DEFAULT_MONITOR_LIMIT
+fi
 
 while true; do
     # Check if any tasks have been submitted
@@ -682,6 +980,7 @@ while true; do
         # Extract the first task UUID
         TASK_UUID=$(echo "$TASK_LIST_RESPONSE" | grep -o '"uuid":"[^"]*"' | head -1 | cut -d'"' -f4)
         echo "Found task: $TASK_UUID"
+        TASK_OUTPUT_LINE=0
 
         # Get task info to check status
         echo "🔧 CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
@@ -697,10 +996,10 @@ while true; do
 
     # Check timeout
     MONITORING_TIMEOUT=$((MONITORING_TIMEOUT + 30))
-    if [ $MONITORING_TIMEOUT -gt $MAX_MONITORING_TIME ]; then
+    if [ "$MONITORING_TIMEOUT" -gt "$MAX_MONITORING_TIME" ]; then
         echo "Timeout waiting for tasks from ClusterODM"
         send_nodeodm_status_to_ptdatax "timeout" "NodeODM timed out waiting for tasks"
-        exit 1
+        exit 0
     fi
 
     echo "Waiting for task from ClusterODM... (${MONITORING_TIMEOUT}s elapsed)"
@@ -716,6 +1015,7 @@ while true; do
     PROGRESS=$(echo "$STATUS_RESPONSE" | grep -o '"progress":[0-9]*' | cut -d':' -f2)
 
     echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
+    stream_task_output
 
     case $STATUS in
         "COMPLETED")
@@ -728,11 +1028,13 @@ while true; do
             echo "Error details:"
             echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
             send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
+            stream_task_output
             exit 1
             ;;
         "CANCELED")
             echo "✗ Task was canceled"
             send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
+            stream_task_output
             exit 1
             ;;
         *)
@@ -740,6 +1042,8 @@ while true; do
             ;;
     esac
 done
+
+stream_task_output
 
 # Download results
 echo "Downloading results..."

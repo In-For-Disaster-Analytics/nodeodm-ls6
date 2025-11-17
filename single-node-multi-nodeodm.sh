@@ -22,6 +22,8 @@ fi
 
 # Load required modules
 module load tacc-apptainer
+# Allow overriding the NodeODM image (default to our fork)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
 
 function get_tap_certificate() {
 	mkdir -p ${HOME}/.tap # this should exist at this point, but just in case...
@@ -183,7 +185,7 @@ EOF
         --bind $instance_dir/nodeodm-config.json:/tmp/nodeodm-config.json \
         --bind $instance_dir/tmp:/var/www/tmp:rw \
         --bind $instance_dir/data:/var/www/data:rw \
-        docker://opendronemap/nodeodm:latest \
+        docker://$NODEODM_IMAGE \
         sh -c "cd /var/www && mkdir -p /tmp/logs && node index.js --config /tmp/nodeodm-config.json" > $LOG_DIR/nodeodm_instance_${instance_id}.log 2>&1 &
     
     local pid=$!

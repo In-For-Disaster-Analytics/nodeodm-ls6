@@ -23,6 +23,8 @@ fi
 # Parse command line arguments
 MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
+# Allow overriding the NodeODM image (default to our fork)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
 
 # Load required modules
 module load tacc-apptainer
@@ -199,7 +201,7 @@ apptainer exec \
     --writable-tmpfs \
     --bind $WORK_DIR/nodeodm_workdir/tmp:/var/www/tmp:rw \
     --bind $WORK_DIR/nodeodm_workdir/data:/var/www/data:rw \
-    docker://opendronemap/nodeodm:latest \
+    docker://$NODEODM_IMAGE \
     sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880" > $LOG_DIR/nodeodm.log 2>&1 &
 
 NODEODM_PID=$!
@@ -368,7 +370,7 @@ while true; do
             --writable-tmpfs \
             --bind $WORK_DIR/nodeodm_workdir/tmp:/var/www/tmp:rw \
             --bind $WORK_DIR/nodeodm_workdir/data:/var/www/data:rw \
-            docker://opendronemap/nodeodm:latest \
+            docker://$NODEODM_IMAGE \
             sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880" >> $LOG_DIR/nodeodm.log 2>&1 &
         
         sleep 30

@@ -1,6 +1,6 @@
 {
   "id": "nodeodm-ls62",
-  "version": "1.0.8-clusterodm-integration",
+  "version": "1.0.11",
   "description": "NodeODM photogrammetry processing on LS6 using ZIP runtime.",
   "owner": "${apiUserId}",
   "enabled": true,
@@ -9,7 +9,7 @@
   "containerImage": "tapis://cloud.data/corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODM/nodeodm-ls6.zip",
   "jobType": "BATCH",
   "maxJobs": -1,
-  "maxJobsPerUser": -1,
+  "maxJobsPerUser": 4,
   "strictFileInputs": false,
   "jobAttributes": {
     "description": null,
@@ -30,7 +30,7 @@
           "name": "max_concurrency",
           "description": "Maximum number of concurrent processing tasks",
           "inputMode": "INCLUDE_ON_DEMAND",
-          "arg": "4"
+          "arg": "12"
         },
         {
           "name": "nodeodm_port",
@@ -79,7 +79,7 @@
       ],
       "envVariables": [
         {
-          "key": "_tapisAccessToken",
+          "key": "TAPIS_ACCESS_TOKEN",
           "value": "${_tapisAccessToken}",
           "description": "Tapis JWT access token for ClusterODM authentication"
         }
@@ -93,9 +93,9 @@
     "fileInputs": [],
     "fileInputArrays": [],
     "nodeCount": 1,
-    "coresPerNode": 4,
-    "memoryMB": 16384,
-    "maxMinutes": 120,
+    "coresPerNode": 16,
+    "memoryMB": 30720,
+    "maxMinutes": 240,
     "subscriptions": [],
     "tags": []
   },
@@ -108,8 +108,6 @@
     "isInteractive": false,
     "icon": "camera",
     "category": "Data Processing",
-    "queueFilter": ["vm-small", "normal"]
+    "queueFilter": ["vm-small", "normal", "development"]
   }
 }
-
-

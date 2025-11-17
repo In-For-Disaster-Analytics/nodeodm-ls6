@@ -22,6 +22,8 @@ fi
 
 # Load required modules
 module load tacc-apptainer
+# Allow overriding the NodeODM image (default to our fork)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/ptdatax/nodeodm:latest}
 
 # Parse command line arguments
 IMAGES_DIR="$1"
@@ -141,7 +143,7 @@ EOF
             --bind \\$PWD/nodeodm_workdir_$node/nodeodm-config.json:/tmp/nodeodm-config.json \\
             --bind \\$PWD/nodeodm_workdir_$node/tmp:/var/www/tmp:rw \\
             --bind \\$PWD/nodeodm_workdir_$node/data:/var/www/data:rw \\
-            docker://opendronemap/nodeodm:latest \\
+            docker://$NODEODM_IMAGE \\
             sh -c 'cd /var/www && mkdir -p /tmp/logs && node index.js --config /tmp/nodeodm-config.json' > $LOG_DIR/nodeodm_$node.log 2>&1 &
         
         echo 'NodeODM started on $node:$port'
