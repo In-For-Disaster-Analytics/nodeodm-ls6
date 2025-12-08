@@ -1,0 +1,363 @@
+Starting NodeODM job (role=admin child=1-admin)
+Loading required modules...
+Working directory: /scratch/06659/wmobley/tapis/1027fab7-c074-4737-82f1-88612c393411-007
+Environment:
+  User: wmobley
+  Hostname: v320-022.ls6.tacc.utexas.edu
+  SLURM_JOB_ID: 2788071
+Found 0 images in input directory
+Ensuring local SIF image at: /scratch/06659/wmobley/tapis/1027fab7-c074-4737-82f1-88612c393411-007/nodeodm_workdir_host1_1-admin_admin/nodeodm.sif
+Pulling NodeODM image into local SIF...
+INFO:    Using cached SIF image
+NODEODM_USE_IMAGE_SOURCE=1; will use container image code (no source overlay).
+Preparing NodeODM runtime (use_image_source=1)
+Runtime directory prepared:
+total 1
+drwx------ 2 wmobley G-820466 0 Dec  4 13:53 .
+drwx------ 2 wmobley G-820466 1 Dec  4 13:53 ..
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 data
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 logs
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 tmp
+Setting up TAP authentication...
+TACC: using token 1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c
+*   Trying 129.114.97.222...
+* TCP_NODELAY set
+* Connected to tap.tacc.utexas.edu (129.114.97.222) port 80 (#0)
+> GET /port-request/9d497fc2-914e-4d45-9a7b-331b26185669 HTTP/1.1
+> Host: tap.tacc.utexas.edu
+> User-Agent: curl/7.61.1
+> Accept: */*
+> 
+< HTTP/1.1 302 Found
+< Date: Thu, 04 Dec 2025 19:53:57 GMT
+< Server: Apache/2.4.41 (Ubuntu)
+< Location: https://tap.tacc.utexas.edu/port-request/9d497fc2-914e-4d45-9a7b-331b26185669
+< Content-Length: 346
+< Content-Type: text/html; charset=iso-8859-1
+< 
+* Ignoring the response-body
+{ [346 bytes data]
+* Connection #0 to host tap.tacc.utexas.edu left intact
+* Clear auth, redirects to port from 80 to 443
+* Issue another request to this URL: 'https://tap.tacc.utexas.edu/port-request/9d497fc2-914e-4d45-9a7b-331b26185669'
+*   Trying 129.114.97.222...
+* TCP_NODELAY set
+* Connected to tap.tacc.utexas.edu (129.114.97.222) port 443 (#1)
+* ALPN, offering h2
+* ALPN, offering http/1.1
+* successfully set certificate verify locations:
+*   CAfile: /etc/pki/tls/certs/ca-bundle.crt
+  CApath: none
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+} [512 bytes data]
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+{ [122 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+{ [19 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Certificate (11):
+{ [5158 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, CERT verify (15):
+{ [520 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+{ [52 bytes data]
+* TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS handshake, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Finished (20):
+} [52 bytes data]
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+* ALPN, server accepted to use h2
+* Server certificate:
+*  subject: C=US; ST=Texas; O=The University of Texas at Austin; CN=tap.tacc.utexas.edu
+*  start date: Sep  3 00:00:00 2025 GMT
+*  expire date: Sep  3 23:59:59 2026 GMT
+*  issuer: C=US; O=Internet2; CN=InCommon RSA Server CA 2
+*  SSL certificate verify ok.
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* Using Stream ID: 1 (easy handle 0x562280ace710)
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+> GET /port-request/9d497fc2-914e-4d45-9a7b-331b26185669 HTTP/2
+> Host: tap.tacc.utexas.edu
+> User-Agent: curl/7.61.1
+> Accept: */*
+> 
+{ [5 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+{ [281 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+{ [281 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+* Connection state changed (MAX_CONCURRENT_STREAMS == 100)!
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+< HTTP/2 200 
+< content-length: 15
+< x-frame-options: DENY
+< x-content-type-options: nosniff
+< referrer-policy: same-origin
+< cross-origin-opener-policy: same-origin
+< vary: Accept-Encoding
+< content-type: text/html; charset=utf-8
+< date: Thu, 04 Dec 2025 19:53:58 GMT
+< server: Apache/2.4.41 (Ubuntu)
+< 
+{ [15 bytes data]
+* Connection #1 to host tap.tacc.utexas.edu left intact
+Skipping session_ready webhook: _webhook_base_url is not set
+[TAP] Role=admin PORT=3001 LOGIN_PORT=60987 TOKEN_PREFIX=1a11bb35
+Creating NodeODM configuration (maxConcurrency=16, maxParallelTasks=16, parallelQueueProcessing=16)...
+NodeODM config created:
+{
+  "port": 3001,
+  "timeout": 0,
+  "maxConcurrency": 16,
+  "maxImages": 0,
+  "cleanupTasksAfter": 2880,
+  "token": "1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c",
+  "parallelQueueProcessing": 16,
+  "maxParallelTasks": 16,
+  "odm_path": "/code",
+  "logger": {
+    "level": "silly",
+    "logDirectory": "/var/www/logs"
+  }
+}
+NODEODM import_path roots: /corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media
+Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)
+Preflight: curl http://localhost:3001/info?token=1a11bb35... (expected fail before start)
+Preflight: curl http://localhost:3001/info?token=1a11bb35... (expected fail before start)
+
+>>> curl -v --connect-timeout 5 http://localhost:3001/info?token=1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying ::1...
+* TCP_NODELAY set
+* connect to ::1 port 3001 failed: Connection refused
+*   Trying 127.0.0.1...
+* TCP_NODELAY set
+* connect to 127.0.0.1 port 3001 failed: Connection refused
+* Failed to connect to localhost port 3001: Connection refused
+* Closing connection 0
+curl: (7) Failed to connect to localhost port 3001: Connection refused
+Starting NodeODM with HTTP and TAP_TOKEN authentication...
+NodeODM PID: 1395223 (HTTP port: 3001 with token: 1a11bb35...)
+ERROR: NodeODM process died immediately
+Apptainer/NodeODM exit status: unknown
+Check startup logs:
+Starting NodeODM job (role=admin child=1-admin)
+Loading required modules...
+Working directory: /scratch/06659/wmobley/tapis/1027fab7-c074-4737-82f1-88612c393411-007
+Environment:
+  User: wmobley
+  Hostname: v320-022.ls6.tacc.utexas.edu
+  SLURM_JOB_ID: 2788071
+Found 0 images in input directory
+Ensuring local SIF image at: /scratch/06659/wmobley/tapis/1027fab7-c074-4737-82f1-88612c393411-007/nodeodm_workdir_host1_1-admin_admin/nodeodm.sif
+Pulling NodeODM image into local SIF...
+INFO:    Using cached SIF image
+NODEODM_USE_IMAGE_SOURCE=1; will use container image code (no source overlay).
+Preparing NodeODM runtime (use_image_source=1)
+Runtime directory prepared:
+total 1
+drwx------ 2 wmobley G-820466 0 Dec  4 13:53 .
+drwx------ 2 wmobley G-820466 1 Dec  4 13:53 ..
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 data
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 logs
+drwxrwxrwx 2 wmobley G-820466 0 Dec  4 13:53 tmp
+Setting up TAP authentication...
+TACC: using token 1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c
+*   Trying 129.114.97.222...
+* TCP_NODELAY set
+* Connected to tap.tacc.utexas.edu (129.114.97.222) port 80 (#0)
+> GET /port-request/9d497fc2-914e-4d45-9a7b-331b26185669 HTTP/1.1
+> Host: tap.tacc.utexas.edu
+> User-Agent: curl/7.61.1
+> Accept: */*
+> 
+< HTTP/1.1 302 Found
+< Date: Thu, 04 Dec 2025 19:53:57 GMT
+< Server: Apache/2.4.41 (Ubuntu)
+< Location: https://tap.tacc.utexas.edu/port-request/9d497fc2-914e-4d45-9a7b-331b26185669
+< Content-Length: 346
+< Content-Type: text/html; charset=iso-8859-1
+< 
+* Ignoring the response-body
+{ [346 bytes data]
+* Connection #0 to host tap.tacc.utexas.edu left intact
+* Clear auth, redirects to port from 80 to 443
+* Issue another request to this URL: 'https://tap.tacc.utexas.edu/port-request/9d497fc2-914e-4d45-9a7b-331b26185669'
+*   Trying 129.114.97.222...
+* TCP_NODELAY set
+* Connected to tap.tacc.utexas.edu (129.114.97.222) port 443 (#1)
+* ALPN, offering h2
+* ALPN, offering http/1.1
+* successfully set certificate verify locations:
+*   CAfile: /etc/pki/tls/certs/ca-bundle.crt
+  CApath: none
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+} [512 bytes data]
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+{ [122 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+{ [19 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Certificate (11):
+{ [5158 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, CERT verify (15):
+{ [520 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+{ [52 bytes data]
+* TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS handshake, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS handshake, Finished (20):
+} [52 bytes data]
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+* ALPN, server accepted to use h2
+* Server certificate:
+*  subject: C=US; ST=Texas; O=The University of Texas at Austin; CN=tap.tacc.utexas.edu
+*  start date: Sep  3 00:00:00 2025 GMT
+*  expire date: Sep  3 23:59:59 2026 GMT
+*  issuer: C=US; O=Internet2; CN=InCommon RSA Server CA 2
+*  SSL certificate verify ok.
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* Using Stream ID: 1 (easy handle 0x562280ace710)
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+> GET /port-request/9d497fc2-914e-4d45-9a7b-331b26185669 HTTP/2
+> Host: tap.tacc.utexas.edu
+> User-Agent: curl/7.61.1
+> Accept: */*
+> 
+{ [5 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+{ [281 bytes data]
+* TLSv1.3 (IN), TLS handshake, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+{ [281 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+* Connection state changed (MAX_CONCURRENT_STREAMS == 100)!
+} [5 bytes data]
+* TLSv1.3 (OUT), TLS app data, [no content] (0):
+} [1 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+* TLSv1.3 (IN), TLS app data, [no content] (0):
+{ [1 bytes data]
+< HTTP/2 200 
+< content-length: 15
+< x-frame-options: DENY
+< x-content-type-options: nosniff
+< referrer-policy: same-origin
+< cross-origin-opener-policy: same-origin
+< vary: Accept-Encoding
+< content-type: text/html; charset=utf-8
+< date: Thu, 04 Dec 2025 19:53:58 GMT
+< server: Apache/2.4.41 (Ubuntu)
+< 
+{ [15 bytes data]
+* Connection #1 to host tap.tacc.utexas.edu left intact
+Skipping session_ready webhook: _webhook_base_url is not set
+[TAP] Role=admin PORT=3001 LOGIN_PORT=60987 TOKEN_PREFIX=1a11bb35
+Creating NodeODM configuration (maxConcurrency=16, maxParallelTasks=16, parallelQueueProcessing=16)...
+NodeODM config created:
+{
+  "port": 3001,
+  "timeout": 0,
+  "maxConcurrency": 16,
+  "maxImages": 0,
+  "cleanupTasksAfter": 2880,
+  "token": "1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c",
+  "parallelQueueProcessing": 16,
+  "maxParallelTasks": 16,
+  "odm_path": "/code",
+  "logger": {
+    "level": "silly",
+    "logDirectory": "/var/www/logs"
+  }
+}
+NODEODM import_path roots: /corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media
+Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)
+Preflight: curl http://localhost:3001/info?token=1a11bb35... (expected fail before start)
+Preflight: curl http://localhost:3001/info?token=1a11bb35... (expected fail before start)
+
+>>> curl -v --connect-timeout 5 http://localhost:3001/info?token=1a11bb35eb4a64e7738e3be15227d538f7772e6128de3670bfd3e763facbb36c
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying ::1...
+* TCP_NODELAY set
+* connect to ::1 port 3001 failed: Connection refused
+*   Trying 127.0.0.1...
+* TCP_NODELAY set
+* connect to 127.0.0.1 port 3001 failed: Connection refused
+* Failed to connect to localhost port 3001: Connection refused
+* Closing connection 0
+curl: (7) Failed to connect to localhost port 3001: Connection refused
+Starting NodeODM with HTTP and TAP_TOKEN authentication...
+NodeODM PID: 1395223 (HTTP port: 3001 with token: 1a11bb35...)
+ERROR: NodeODM process died immediately
+Apptainer/NodeODM exit status: unknown
+Check startup logs:
+Cleaning up processes (exit code: 1)...
+De-registering from ClusterODM...
+De-registering NodeODM from ClusterODM...
+Using webhook de-registration with Tapis JWT token...
+✅ Successfully de-registered NodeODM from ClusterODM via webhook!
+🔗 NodeODM de-registration process completed
+Cleanup completed (exit code: 1)

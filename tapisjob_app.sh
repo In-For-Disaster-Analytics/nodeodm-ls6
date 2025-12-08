@@ -6,6 +6,8 @@
 
 if [[ "${DEBUG:-0}" == "1" ]]; then
     set -x
+    # Keep going during debug even if a command fails (don't auto-shutdown)
+    set +e
 fi
 
 if [[ -n "$1" ]]; then
@@ -23,7 +25,10 @@ NODEODM_LOG_LEVEL=silly
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
 NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
 # If set to 1, run directly from the container image code (no source overlay bind)
-NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-0}
+NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-1}
+# Default to normal run; set NODEODM_DEBUG_SHELL=1 to pause and attach for debugging.
+NODEODM_DEBUG_SHELL=${NODEODM_DEBUG_SHELL:-0}
+NODEODM_DEBUG_SLEEP=${NODEODM_DEBUG_SLEEP:-43200}
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -162,6 +167,13 @@ if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
 else
     LOG_FILE="${LOG_DIR}/nodeodm.log"
 fi
+# Mirror output to stdout and log, and wrap curl for verbose tracing
+exec > >(tee -a "$LOG_FILE") 2>&1
+curl() {
+    echo ""
+    echo ">>> curl $*"
+    command curl -v "$@"
+}
 # Start log file early so we always have something to tail
 echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_INDEX:-primary})" > "$LOG_FILE" || true
 
@@ -198,6 +210,27 @@ else
     WORK_DIR="${WORK_DIR_BASE}"
 fi
 mkdir -p "$WORK_DIR"
+
+# Ensure we have a local SIF image for NodeODM to avoid repeated remote pulls
+NODEODM_SIF="$WORK_DIR/nodeodm.sif"
+echo "Ensuring local SIF image at: $NODEODM_SIF"
+if [ ! -f "$NODEODM_SIF" ]; then
+    echo "Pulling NodeODM image into local SIF..."
+    apptainer pull "$NODEODM_SIF" "docker://$NODEODM_IMAGE" || {
+        echo "ERROR: Failed to pull NodeODM image to $NODEODM_SIF"
+        exit 1
+    }
+else
+    echo "Using existing NodeODM SIF image at $NODEODM_SIF"
+fi
+if [[ "${NODEODM_FORCE_PULL:-0}" == "1" ]]; then
+    echo "NODEODM_FORCE_PULL=1; cleaning cache and forcing image pull..."
+    apptainer cache clean -f || true
+    apptainer pull --force "$NODEODM_SIF" "docker://$NODEODM_IMAGE" || {
+        echo "ERROR: Forced pull failed for $NODEODM_IMAGE"
+        exit 1
+    }
+fi
 
 NODEODM_SOURCE_DIR="${SCRIPT_DIR}/nodeodm-source"
 # Optional: auto-sync NodeODM source from git when not bundled in the ZIP
@@ -243,7 +276,7 @@ fi
 
 # Always provide writable dirs for data/tmp/logs
 mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
-chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp"
+chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
 
 # Determine bind args for apptainer (overlay source vs. image code)
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
@@ -258,7 +291,7 @@ ls -la "$NODEODM_RUNTIME_DIR"
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
     if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
         echo "Extracting NodeODM node_modules from base container cache..."
-        apptainer exec docker://$NODEODM_IMAGE \
+        apptainer exec "$NODEODM_SIF" \
             sh -c "cd /var/www && tar -cf - node_modules" | tar -xf - -C "$NODEODM_RUNTIME_DIR"
         if [ ! -d "$NODEODM_RUNTIME_DIR/node_modules" ]; then
             echo "WARNING: node_modules extraction failed; falling back to npm install during container startup."
@@ -331,14 +364,30 @@ function port_forwarding_tap() {
 }
 
 function send_url_to_webhook() {
-	NODEODM_URL="https://${NODE_HOSTNAME_DOMAIN}:${LOGIN_PORT}/?token=${TAP_TOKEN}"
-	INTERACTIVE_WEBHOOK_URL="${_webhook_base_url}"
-	# Wait a few seconds for NodeODM to boot up and send webhook callback url for job ready notification.
-	# Notification is sent to _INTERACTIVE_WEBHOOK_URL, e.g. https://ptdatax.tacc.utexas.edu/webhooks/interactive/
-	(
-		sleep 5 &&
-			curl -k --data "event_type=nodeodm_session_ready&address=${NODEODM_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&service_type=nodeodm&clusterodm_url=${CLUSTERODM_URL}" "${_INTERACTIVE_WEBHOOK_URL}" &
-	) &
+    # Session-ready webhook back to the interactive service so users know the tunnel URL.
+    if [ -z "${_webhook_base_url:-}" ]; then
+        echo "Skipping session_ready webhook: _webhook_base_url is not set"
+        return
+    fi
+
+    local host="ls6.tacc.utexas.edu"
+    local scheme="https"
+    if [ -n "${_webhook_use_http:-}" ]; then
+        scheme="http"
+    fi
+    NODEODM_URL="${scheme}://${host}:${LOGIN_PORT}/?token=${TAP_TOKEN}"
+    INTERACTIVE_WEBHOOK_URL="${_webhook_base_url%/}"
+
+    echo "Sending session_ready webhook to ${INTERACTIVE_WEBHOOK_URL} with address=${NODEODM_URL}"
+    (
+        sleep 5
+        pkill -0 $$ || exit 0
+        local resp
+        resp=$(curl -k -s -w " HTTP_CODE:%{http_code}" \
+            --data "event_type=nodeodm_session_ready&address=${NODEODM_URL}&owner=${_tapisJobOwner}&job_uuid=${_tapisJobUUID}&service_type=nodeodm&clusterodm_url=${CLUSTERODM_URL}" \
+            "${INTERACTIVE_WEBHOOK_URL}" 2>&1)
+        echo "session_ready webhook response: ${resp}"
+    ) &
 
 }
 
@@ -650,36 +699,70 @@ fi
 
 echo "Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)"
 
+# Preflight curl (will likely fail before startup; logged for diagnostics)
+echo "Preflight: curl http://localhost:${NODEODM_PORT}/info?token=${TAP_TOKEN:0:8}... (expected fail before start)" | tee -a "$LOG_FILE"
+curl -v --connect-timeout 5 "http://localhost:${NODEODM_PORT}/info?token=${TAP_TOKEN}" >> "$LOG_FILE" 2>&1 || true
+
+echo "SIF image details:"
+ls -lh "$NODEODM_SIF" || true
+echo "Testing apptainer exec sanity on SIF..."
+if ! apptainer exec "$NODEODM_SIF" /bin/true >> "$LOG_FILE" 2>&1; then
+    echo "ERROR: apptainer exec sanity check failed for $NODEODM_SIF"
+    exit 1
+fi
+
+# Debug shell mode: keep the job/node alive and skip NodeODM launch so you can attach and run commands manually.
+# Attach from login node with: srun --jobid $SLURM_JOB_ID --pty bash
+# Then inside the node run the printed apptainer shell command.
+if [[ "${NODEODM_DEBUG_SHELL:-0}" == "1" ]]; then
+    echo "===================================================="
+    echo "NODEODM_DEBUG_SHELL=1: skipping NodeODM start."
+    echo "Attach to this node from login with:"
+    echo "  srun --jobid ${SLURM_JOB_ID:-<jobid>} --pty bash"
+    echo ""
+    echo "Inside the node, to enter the container:"
+    echo "  apptainer shell --writable-tmpfs \\"
+    echo "    --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \\"
+    echo "    $NODEODM_BIND_ARGS \\"
+    echo "    \"$NODEODM_SIF\""
+    echo ""
+    echo "This job will stay alive for ${NODEODM_DEBUG_SLEEP:-43200} seconds (NODEODM_DEBUG_SLEEP to change)."
+    echo "===================================================="
+    sleep "${NODEODM_DEBUG_SLEEP:-43200}"
+    exit 0
+fi
+
 # Start NodeODM with HTTP and TAP_TOKEN authentication
 echo "Starting NodeODM with HTTP and TAP_TOKEN authentication..."
-apptainer exec \
-    --writable-tmpfs \
-    --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
-    $NODEODM_BIND_ARGS \
-    docker://$NODEODM_IMAGE \
-    sh -c "export PATH=/usr/local/bin:/usr/bin:/bin:/sbin:\$PATH; \
-            # Newer NodeODM images use an nvm-based node and a node.sh wrapper. \
-            NODE_BIN=\$(command -v node || command -v nodejs || find /usr/local/nvm -type f -path '*bin/node' 2>/dev/null | head -n1); \
-            if [ -z \"\$NODE_BIN\" ] && [ -x /usr/local/bin/node.sh ]; then \
-                echo \"node not found in PATH; falling back to /usr/local/bin/node.sh wrapper\"; \
-                NODE_BIN=\"/usr/local/bin/node.sh\"; \
-            fi; \
-            if [ -z \"\$NODE_BIN\" ]; then \
-                echo \"ERROR: node binary not found inside container\"; \
-                exit 127; \
-            fi; \
-            export PATH=\$(dirname \"\$NODE_BIN\"):\$PATH; \
-            echo \"Using node binary: \$NODE_BIN\"; \
-            echo \"Listing /var/www to confirm bound source:\"; \
-            ls -la /var/www | head -40; \
-            echo \"Showing top of /var/www/index.js:\"; \
-            head -n 40 /var/www/index.js || true; \
-            cd /var/www && mkdir -p tmp data logs && \
-            if [ ! -d node_modules ] || [ ! -f node_modules/winston/package.json ]; then \
-              echo 'Installing NodeODM dependencies (npm install --production)...'; \
-              npm install --production || exit 1; \
-            fi && \
-            exec \"\$NODE_BIN\" index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL" > $LOG_FILE 2>&1 &
+NODEODM_EXIT_CODE_FILE="$WORK_DIR/nodeodm_exit_code"
+rm -f "$NODEODM_EXIT_CODE_FILE"
+(
+    apptainer exec \
+        --writable-tmpfs \
+        --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
+        $NODEODM_BIND_ARGS \
+        "$NODEODM_SIF" \
+        bash -lc "set -euo pipefail; export PATH=/usr/local/bin:/usr/bin:/bin:/sbin:\$PATH; \
+                if [ \"\${NODEODM_DEBUG_START:-0}\" = \"1\" ]; then \
+                    echo '[DEBUG] NODEODM_DEBUG_START=1 set, running container debug payload only'; \
+                    env | sort; \
+                    echo '--- ls -la / ---'; ls -la /; \
+                    echo '--- ls -la /var/www ---'; ls -la /var/www; \
+                    echo '--- node discovery ---'; \
+                    (node --version && which node) || true; \
+                    find / -maxdepth 5 -type f -name node -perm -111 2>/dev/null | head; \
+                    echo '--- npm version ---'; npm --version || true; \
+                    echo '--- head -n 40 /var/www/index.js ---'; head -n 40 /var/www/index.js || true; \
+                    exit 0; \
+                fi; \
+                cd /var/www || exit 1; \
+                echo \"[LAUNCH] pwd=\$(pwd)\"; \
+                node --version && npm --version || true; \
+                ls -la /var/www | head -40; \
+                mkdir -p tmp data logs; \
+                exec node index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL"
+    echo $? > "$NODEODM_EXIT_CODE_FILE"
+) >> "$LOG_FILE" 2>&1 &
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${TAP_TOKEN:0:8}...)"
@@ -688,8 +771,39 @@ echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${TAP_TOKE
 sleep 5
 if ! kill -0 $NODEODM_PID 2>/dev/null; then
     echo "ERROR: NodeODM process died immediately"
+    wait "$NODEODM_PID" 2>/dev/null
+    NODEODM_EXIT_STATUS=$?
+    if [ -z "$NODEODM_EXIT_STATUS" ] || [ "$NODEODM_EXIT_STATUS" -eq 127 ]; then
+        if [ -f "$NODEODM_EXIT_CODE_FILE" ]; then
+            NODEODM_EXIT_STATUS=$(cat "$NODEODM_EXIT_CODE_FILE")
+        fi
+    fi
+    echo "Apptainer/NodeODM exit status: ${NODEODM_EXIT_STATUS:-unknown}"
+    echo "${NODEODM_EXIT_STATUS:-unknown}" > "$NODEODM_EXIT_CODE_FILE"
     echo "Check startup logs:"
-    cat $LOG_FILE
+    tail -n 200 "$LOG_FILE"
+    # Automatic one-time debug re-run inside container to capture env/layout if not already in debug mode.
+    if [ "${NODEODM_DEBUG_START:-0}" != "1" ]; then
+        echo "Re-running container once with NODEODM_DEBUG_START=1 for diagnostics..."
+        NODEODM_DEBUG_START=1 \
+        apptainer exec \
+            --writable-tmpfs \
+            --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
+            $NODEODM_BIND_ARGS \
+            "$NODEODM_SIF" \
+            sh -c "export PATH=/usr/local/bin:/usr/bin:/bin:/sbin:\$PATH; \
+                    echo '[DEBUG] NODEODM_DEBUG_START=1 forced after failure'; \
+                    env | sort; \
+                    echo '--- ls -la / ---'; ls -la /; \
+                    echo '--- ls -la /var/www ---'; ls -la /var/www; \
+                    echo '--- node discovery ---'; \
+                    (node --version && which node) || true; \
+                    find / -maxdepth 5 -type f -name node -perm -111 2>/dev/null | head; \
+                    echo '--- npm version ---'; npm --version || true; \
+                    echo '--- head -n 40 /var/www/index.js ---'; head -n 40 /var/www/index.js || true; \
+                    exit 0" >> "$LOG_FILE" 2>&1 || true
+        echo "Diagnostic run completed (see log above)."
+    fi
     exit 1
 fi
 
