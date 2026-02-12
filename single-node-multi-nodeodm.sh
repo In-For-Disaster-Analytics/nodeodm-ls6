@@ -165,7 +165,7 @@ start_nodeodm_instance() {
   "timeout": 0,
   "maxConcurrency": $max_concurrency,
   "maxImages": 0,
-  "cleanupTasksAfter": 2880,
+  "cleanupTasksAfter": 0,
   "token": "",
   "parallelQueueProcessing": 1,
   "maxParallelTasks": $max_parallel_tasks,

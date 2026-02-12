@@ -26,6 +26,8 @@ NODEODM_LOG_LEVEL=silly
 NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
 # If set to 1, run directly from the container image code (no source overlay bind)
 NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-1}
+# If set to 1, skip launching NodeODM (leave the job alive for debugging)
+NODEODM_SKIP_START=${NODEODM_SKIP_START:-0}
 # Default to normal run; set NODEODM_DEBUG_SHELL=1 to pause and attach for debugging.
 NODEODM_DEBUG_SHELL=${NODEODM_DEBUG_SHELL:-0}
 NODEODM_DEBUG_SLEEP=${NODEODM_DEBUG_SLEEP:-43200}
@@ -180,6 +182,13 @@ echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_IN
 # Load required modules (from working nodeodm.sh)
 echo "Loading required modules..."
 module load tacc-apptainer
+module load remora || echo "Remora module not available; continuing without it."
+
+# Remora profiling (system-level). Enable/disable with REMORA_ENABLE=0.
+REMORA_ENABLE=${REMORA_ENABLE:-1}
+REMORA_PERIOD=${REMORA_PERIOD:-10}
+REMORA_MODE=${REMORA_MODE:-BASIC}
+export REMORA_PERIOD REMORA_MODE
 
 echo "Working directory: $(pwd)"
 echo "Environment:"
@@ -209,6 +218,11 @@ if [[ -n "$NODEODM_CHILD_INDEX" ]]; then
 else
     WORK_DIR="${WORK_DIR_BASE}"
 fi
+
+# Completion signal (ClusterODM -> NodeODM job) settings
+NODEODM_COMPLETE_ENABLE=${NODEODM_COMPLETE_ENABLE:-1}
+NODEODM_COMPLETE_PORT=${NODEODM_COMPLETE_PORT:-3010}
+COMPLETE_FLAG="$WORK_DIR/nodeodm_complete.flag"
 mkdir -p "$WORK_DIR"
 
 # Ensure we have a local SIF image for NodeODM to avoid repeated remote pulls
@@ -279,10 +293,16 @@ mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIM
 chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
 
 # Determine bind args for apptainer (overlay source vs. image code)
+# Always bind the job working dir (e.g., $SCRATCH job path) so import_path can reference it directly inside the container
+SCRATCH_BIND=""
+if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
+    SCRATCH_BIND="--bind ${_tapisJobWorkingDir}:${_tapisJobWorkingDir}:rw"
+fi
+
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND}"
 else
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND}"
 fi
 
 echo "Runtime directory prepared:"
@@ -394,6 +414,103 @@ function send_url_to_webhook() {
 # Function to send NodeODM status updates to PTDataX
 function send_nodeodm_status_to_ptdatax() {
     # PTDATAX webhook disabled for local/idev testing
+    return 0
+}
+
+# Start a lightweight completion endpoint for ClusterODM to signal job exit.
+# Only run on the primary (non-child) admin to avoid duplicates.
+function start_completion_server() {
+    if [[ "${NODEODM_COMPLETE_ENABLE:-0}" != "1" ]]; then
+        echo "Completion server disabled (NODEODM_COMPLETE_ENABLE=${NODEODM_COMPLETE_ENABLE})"
+        return 0
+    fi
+    if [[ "${NODEODM_CHILD:-0}" == "1" ]]; then
+        echo "Skipping completion server on child instance (NODEODM_CHILD=1)"
+        return 0
+    fi
+    if [[ "${NODEODM_ROLE:-admin}" != "admin" ]]; then
+        echo "Skipping completion server on non-admin role (${NODEODM_ROLE})"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 not available; cannot start completion server"
+        return 0
+    fi
+
+    export NODEODM_COMPLETE_FLAG="$COMPLETE_FLAG"
+    export NODEODM_COMPLETE_TOKEN="${NODEODM_COMPLETE_TOKEN:-$TAP_TOKEN}"
+    export NODEODM_COMPLETE_PORT
+
+    echo "Starting completion server on port ${NODEODM_COMPLETE_PORT} (flag: ${COMPLETE_FLAG})"
+    python3 - <<'PY' &
+import http.server
+import os
+import urllib.parse
+
+flag = os.environ.get("NODEODM_COMPLETE_FLAG", "/tmp/nodeodm_complete.flag")
+token = os.environ.get("NODEODM_COMPLETE_TOKEN", "")
+port = int(os.environ.get("NODEODM_COMPLETE_PORT", "3010"))
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def _ok(self, msg):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(msg.encode("utf-8"))
+
+    def _forbidden(self):
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"forbidden")
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/complete":
+            self.send_response(404)
+            self.end_headers()
+            return
+        qs = urllib.parse.parse_qs(parsed.query)
+        req_token = qs.get("token", [""])[0]
+        if token and req_token != token:
+            return self._forbidden()
+        os.makedirs(os.path.dirname(flag), exist_ok=True)
+        with open(flag, "w") as f:
+            f.write("complete\\n")
+        return self._ok("ok")
+
+    def do_POST(self):
+        return self.do_GET()
+
+    def log_message(self, fmt, *args):
+        pass
+
+http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+PY
+    COMPLETION_SERVER_PID=$!
+    echo "Completion server PID: $COMPLETION_SERVER_PID"
+}
+
+function wait_for_completion_signal() {
+    local wait_sec=${NODEODM_COMPLETE_WAIT_SEC:-1800}
+    local waited=0
+    if [[ "${NODEODM_COMPLETE_ENABLE:-0}" != "1" ]]; then
+        return 0
+    fi
+    if [ -f "$COMPLETE_FLAG" ]; then
+        echo "Completion flag already present: $COMPLETE_FLAG"
+        return 0
+    fi
+    echo "Waiting for completion signal (up to ${wait_sec}s)..."
+    while [ "$waited" -lt "$wait_sec" ]; do
+        if [ -f "$COMPLETE_FLAG" ]; then
+            echo "Completion signal received."
+            return 0
+        fi
+        sleep 10
+        waited=$((waited + 10))
+    done
+    echo "Completion signal not received within ${wait_sec}s; continuing."
     return 0
 }
 
@@ -620,6 +737,10 @@ cleanup() {
         sleep 3
         kill -9 $NODEODM_PID 2>/dev/null || true
     fi
+    if [ -n "$COMPLETION_SERVER_PID" ] && kill -0 $COMPLETION_SERVER_PID 2>/dev/null; then
+        echo "Stopping completion server (PID: $COMPLETION_SERVER_PID)..."
+        kill $COMPLETION_SERVER_PID 2>/dev/null || true
+    fi
     # Fallback cleanup
     pkill -f "node.*index.js" 2>/dev/null || true
     pkill -f apptainer 2>/dev/null || true
@@ -653,6 +774,17 @@ else
 fi
 echo "[TAP] Role=$NODEODM_ROLE PORT=$NODEODM_PORT LOGIN_PORT=${LOGIN_PORT:-n/a} TOKEN_PREFIX=${TAP_TOKEN:0:8}"
 
+# Export for downstream tools (e.g., remote.py token auto-append), per-port and default.
+export ODM_NODE_TOKEN="$TAP_TOKEN"
+if [[ -n "$NODEODM_PORT" ]]; then
+    export ODM_NODE_TOKEN_${NODEODM_PORT}="$TAP_TOKEN"
+    echo "[TAP] Exported ODM_NODE_TOKEN and ODM_NODE_TOKEN_${NODEODM_PORT} for downstream consumers"
+else
+    echo "[TAP] Exported ODM_NODE_TOKEN for downstream consumers"
+fi
+
+# Start completion server after TAP token is available
+start_completion_server
 
 # Create NodeODM configuration file with TAP_TOKEN
 PARALLEL_QUEUE=${NODEODM_PARALLEL_QUEUE:-$MAX_CONCURRENCY}
@@ -665,14 +797,15 @@ if [ "$MAX_PARALLEL_TASKS" -lt 1 ]; then
     MAX_PARALLEL_TASKS=1
 fi
 
-echo "Creating NodeODM configuration (maxConcurrency=$MAX_CONCURRENCY, maxParallelTasks=$MAX_PARALLEL_TASKS, parallelQueueProcessing=$PARALLEL_QUEUE)..."
+NODEODM_CLEANUP_MINUTES=0
+echo "Creating NodeODM configuration (maxConcurrency=$MAX_CONCURRENCY, maxParallelTasks=$MAX_PARALLEL_TASKS, parallelQueueProcessing=$PARALLEL_QUEUE, cleanupTasksAfter=${NODEODM_CLEANUP_MINUTES})..."
 cat > $WORK_DIR/nodeodm-config.json << EOF
 {
   "port": $NODEODM_PORT,
   "timeout": 0,
   "maxConcurrency": $MAX_CONCURRENCY,
   "maxImages": 0,
-  "cleanupTasksAfter": 2880,
+  "cleanupTasksAfter": ${NODEODM_CLEANUP_MINUTES},
   "token": "$TAP_TOKEN",
   "parallelQueueProcessing": $PARALLEL_QUEUE,
   "maxParallelTasks": $MAX_PARALLEL_TASKS,
@@ -688,7 +821,12 @@ echo "NodeODM config created:"
 cat $WORK_DIR/nodeodm-config.json
 
 # Configure shared filesystem roots for import_path passthrough (can be disabled)
-SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media}"
+# Prefer the Tapis working dir if provided (so submodels under that tree are allowed)
+if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
+    SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-${_tapisJobWorkingDir}}"
+else
+    SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media}"
+fi
 if [[ "${NODEODM_DISABLE_IMPORT_PATH:-0}" == "1" ]]; then
     unset NODEODM_IMPORT_PATH_ROOTS
     echo "NODEODM import_path passthrough disabled (NODEODM_DISABLE_IMPORT_PATH=1)"
@@ -696,6 +834,9 @@ else
     export NODEODM_IMPORT_PATH_ROOTS="$SHARED_IMPORT_ROOT"
     echo "NODEODM import_path roots: ${NODEODM_IMPORT_PATH_ROOTS}"
 fi
+
+# Force ODM remote to use import_path (avoid seed.zip fallback)
+export ODM_REMOTE_USE_IMPORT_PATH=1
 
 echo "Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)"
 
@@ -732,12 +873,25 @@ if [[ "${NODEODM_DEBUG_SHELL:-0}" == "1" ]]; then
     exit 0
 fi
 
+# Debug skip mode: keep the job/node alive but do not start NodeODM.
+if [[ "${NODEODM_SKIP_START:-0}" == "1" ]]; then
+    echo "===================================================="
+    echo "NODEODM_SKIP_START=1: skipping NodeODM start (debug hold)."
+    echo "Attach to this node from login with:"
+    echo "  srun --jobid ${SLURM_JOB_ID:-<jobid>} --pty bash"
+    echo "You can then enter the container manually if needed."
+    echo "This job will stay alive for ${NODEODM_DEBUG_SLEEP:-43200} seconds (NODEODM_DEBUG_SLEEP to change)."
+    echo "===================================================="
+    sleep "${NODEODM_DEBUG_SLEEP:-43200}"
+    exit 0
+fi
+
 # Start NodeODM with HTTP and TAP_TOKEN authentication
 echo "Starting NodeODM with HTTP and TAP_TOKEN authentication..."
 NODEODM_EXIT_CODE_FILE="$WORK_DIR/nodeodm_exit_code"
 rm -f "$NODEODM_EXIT_CODE_FILE"
 (
-    apptainer exec \
+    RUN_CMD=(apptainer exec \
         --writable-tmpfs \
         --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
         $NODEODM_BIND_ARGS \
@@ -760,7 +914,15 @@ rm -f "$NODEODM_EXIT_CODE_FILE"
                 node --version && npm --version || true; \
                 ls -la /var/www | head -40; \
                 mkdir -p tmp data logs; \
-                exec node index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL"
+                export ODM_IMPORT_PATH_BASE=${ODM_IMPORT_PATH_BASE:-${WORK_DIR}/runtime/data}; \
+                export _tapisJobWorkingDir=${_tapisJobWorkingDir}; \
+                exec node index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL")
+    if [[ "$REMORA_ENABLE" == "1" ]] && command -v remora >/dev/null 2>&1; then
+        echo "Starting NodeODM under Remora (mode=$REMORA_MODE period=${REMORA_PERIOD}s)"
+        remora "${RUN_CMD[@]}"
+    else
+        "${RUN_CMD[@]}"
+    fi
     echo $? > "$NODEODM_EXIT_CODE_FILE"
 ) >> "$LOG_FILE" 2>&1 &
 
@@ -1196,6 +1358,9 @@ echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dsm.tif 'http://localhost:$NODE
 curl -s -o $OUTPUT_DIR/dsm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$TAP_TOKEN"
 echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${TAP_TOKEN:0:10}...'"
 curl -s -o $OUTPUT_DIR/dtm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$TAP_TOKEN"
+
+# Wait for ClusterODM to signal that results have been transferred to WebODM
+wait_for_completion_signal
 
 # Generate processing report
 echo "NodeODM Processing Report" > $OUTPUT_DIR/processing_report.txt

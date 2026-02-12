@@ -125,7 +125,7 @@ for i in "${!PROCESSING_NODES[@]}"; do
   \\\"timeout\\\": 0,
   \\\"maxConcurrency\\\": 2,
   \\\"maxImages\\\": 0,
-  \\\"cleanupTasksAfter\\\": 2880,
+  \\\"cleanupTasksAfter\\\": 0,
   \\\"token\\\": \\\"\\\",
   \\\"parallelQueueProcessing\\\": 1,
   \\\"maxParallelTasks\\\": 3,

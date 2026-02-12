@@ -202,7 +202,7 @@ apptainer exec \
     --bind $WORK_DIR/nodeodm_workdir/tmp:/var/www/tmp:rw \
     --bind $WORK_DIR/nodeodm_workdir/data:/var/www/data:rw \
     docker://$NODEODM_IMAGE \
-    sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 2880" > $LOG_DIR/nodeodm.log 2>&1 &
+    sh -c "cd /var/www && node index.js --port $NODEODM_PORT --max-concurrency $MAX_CONCURRENCY --cleanup-tasks-after 0" > $LOG_DIR/nodeodm.log 2>&1 &
 
 NODEODM_PID=$!
 echo "NodeODM PID: $NODEODM_PID"
