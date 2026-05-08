@@ -25,7 +25,7 @@ NODEODM_LOG_LEVEL=silly
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
 NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
 # If set to 1, run directly from the container image code (no source overlay bind)
-NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-1}
+NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-0}
 # If set to 1, skip launching NodeODM (leave the job alive for debugging)
 NODEODM_SKIP_START=${NODEODM_SKIP_START:-0}
 # Default to normal run; set NODEODM_DEBUG_SHELL=1 to pause and attach for debugging.
@@ -176,6 +176,7 @@ curl() {
     echo ">>> curl $*"
     command curl -v "$@"
 }
+
 # Start log file early so we always have something to tail
 echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_INDEX:-primary})" > "$LOG_FILE" || true
 
@@ -1081,6 +1082,12 @@ function register_with_clusterodm() {
     echo "  Host: $NODEODM_HOST"
     echo "  Port: $NODEODM_REGISTER_PORT"
     echo "  Token: ${TAP_TOKEN:0:10}..."
+    echo "  Child index: ${NODEODM_CHILD_INDEX:-primary}"
+    echo "  Role: ${NODEODM_ROLE:-admin}"
+    echo "  Host ID: ${NODEODM_HOST_ID:-0}"
+    echo "  Worker ID: ${NODEODM_WORKER_ID:-0}"
+    echo "  Job index/count: ${NODEODM_JOB_INDEX:-1}/${NODEODM_JOB_COUNT:-1}"
+    echo "  Replicas per job: ${NODEODM_REPLICAS_PER_JOB:-1}"
 
     # Direct curl registration call with job UUID mapping
     echo "Sending registration request to: $CLUSTERODM_URL/webhook/register-node"
@@ -1088,7 +1095,7 @@ function register_with_clusterodm() {
     echo "Debug: Full URL='$CLUSTERODM_URL/webhook/register-node'"
 
     # Prepare JSON payload with Tapis job owner for user-based authentication
-    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true}"
+    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"}"
     echo "Debug: JSON payload='$JSON_PAYLOAD'"
 
     # Show the exact curl command for manual testing
@@ -1257,7 +1264,13 @@ TASK_OUTPUT_LINE=0
 MONITORING_TIMEOUT=0
 
 # Convert SLURM_TIMELIMIT to seconds (handles HH:MM:SS or minutes)
-DEFAULT_MONITOR_LIMIT=$((2 * 60 * 60))  # fall back to 2 hours
+# Allow override via NODEODM_MONITOR_TIMEOUT_SEC (seconds) or NODEODM_MONITOR_TIMEOUT_HOURS.
+DEFAULT_MONITOR_LIMIT=$((6 * 60 * 60))  # fall back to 6 hours
+if [[ -n "${NODEODM_MONITOR_TIMEOUT_SEC:-}" ]]; then
+    DEFAULT_MONITOR_LIMIT="${NODEODM_MONITOR_TIMEOUT_SEC}"
+elif [[ -n "${NODEODM_MONITOR_TIMEOUT_HOURS:-}" ]]; then
+    DEFAULT_MONITOR_LIMIT=$((NODEODM_MONITOR_TIMEOUT_HOURS * 3600))
+fi
 if [[ "$SLURM_TIMELIMIT" =~ ^[0-9]+$ ]]; then
     MAX_MONITORING_TIME=$((SLURM_TIMELIMIT * 60))
 elif [[ "$SLURM_TIMELIMIT" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
