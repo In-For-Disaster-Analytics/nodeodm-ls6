@@ -1,6 +1,6 @@
 {
   "id": "nodeodm-ls62",
-  "version": "1.0.11",
+  "version": "1.0.14",
   "description": "NodeODM photogrammetry processing on LS6 using ZIP runtime.",
   "owner": "${apiUserId}",
   "enabled": true,
@@ -108,6 +108,6 @@
     "isInteractive": false,
     "icon": "camera",
     "category": "Data Processing",
-    "queueFilter": ["vm-small", "normal", "development"]
+    "queueFilter": ["vm-small", "normal", "development", "gpu-a100","gpu-a100-dev","gpu-a100-small"]
   }
 }

@@ -22,8 +22,8 @@ fi
 
 # Load required modules
 module load tacc-apptainer
-# Allow overriding the NodeODM image (default to our fork)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
+# Allow overriding the NodeODM image (default to our GPU fork)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:gpu}
 
 # Parse command line arguments
 IMAGES_DIR="$1"

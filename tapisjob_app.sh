@@ -23,7 +23,7 @@ CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
 CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
 NODEODM_LOG_LEVEL=silly
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:gpu}
 # If set to 1, run directly from the container image code (no source overlay bind)
 NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-0}
 # If set to 1, skip launching NodeODM (leave the job alive for debugging)
@@ -293,6 +293,35 @@ fi
 mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
 chmod 777 "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/tmp" "$NODEODM_RUNTIME_DIR/logs"
 
+# ODM stores downloaded AI models outside of task projects. Keep that cache in
+# the writable NodeODM data bind instead of the read-only /code install tree.
+ODM_AI_MODELS_PATH=${ODM_AI_MODELS_PATH:-/var/www/data/.odm/models}
+ODM_CODE_STORAGE_HOST_DIR="$NODEODM_RUNTIME_DIR/data/.odm/code_storage"
+mkdir -p "$NODEODM_RUNTIME_DIR/data/.odm/models" "$ODM_CODE_STORAGE_HOST_DIR"
+chmod 777 "$NODEODM_RUNTIME_DIR/data/.odm" "$NODEODM_RUNTIME_DIR/data/.odm/models" "$ODM_CODE_STORAGE_HOST_DIR"
+export ODM_AI_MODELS_PATH
+echo "ODM AI model cache: $ODM_AI_MODELS_PATH"
+
+# Existing ODM images still derive the model cache from /code/storage. Bind that
+# path to writable scratch storage so older images do not fail before rebuild.
+ODM_CODE_STORAGE_BIND_ARGS=""
+if [[ "${ODM_BIND_CODE_STORAGE:-1}" == "1" ]]; then
+    ODM_CODE_STORAGE_BIND_ARGS="--bind $ODM_CODE_STORAGE_HOST_DIR:/code/storage:rw"
+    echo "ODM legacy /code/storage bind: $ODM_CODE_STORAGE_HOST_DIR"
+fi
+
+# The NodeODM ZIP overlays /var/www, but ODM itself lives in /code inside the
+# container. Bind the patched split-merge remote implementation until the GPU
+# image is rebuilt with the same code.
+ODM_REMOTE_PATCH_BIND_ARGS=""
+ODM_REMOTE_PATCH_SOURCE="${SCRIPT_DIR}/odm-patches/remote.py"
+if [[ "${ODM_BIND_REMOTE_PATCH:-1}" == "1" && -f "$ODM_REMOTE_PATCH_SOURCE" ]]; then
+    ODM_REMOTE_PATCH_BIND_ARGS="--bind $ODM_REMOTE_PATCH_SOURCE:/code/opendm/remote.py:ro"
+    echo "ODM remote.py patch bind: $ODM_REMOTE_PATCH_SOURCE -> /code/opendm/remote.py"
+else
+    echo "ODM remote.py patch bind disabled or missing: $ODM_REMOTE_PATCH_SOURCE"
+fi
+
 # Determine bind args for apptainer (overlay source vs. image code)
 # Always bind the job working dir (e.g., $SCRATCH job path) so import_path can reference it directly inside the container
 SCRATCH_BIND=""
@@ -301,9 +330,9 @@ if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
 fi
 
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND}"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
 else
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND}"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
 fi
 
 echo "Runtime directory prepared:"
@@ -838,6 +867,24 @@ fi
 
 # Force ODM remote to use import_path (avoid seed.zip fallback)
 export ODM_REMOTE_USE_IMPORT_PATH=1
+export ODM_IMPORT_PATH_BASE="${ODM_IMPORT_PATH_BASE:-${NODEODM_RUNTIME_DIR}/data}"
+
+# Apptainer normally passes the environment through, but make the critical
+# split-merge path variables explicit so GPU queue jobs cannot silently fall
+# back to seed.zip uploads.
+export APPTAINERENV_ODM_REMOTE_USE_IMPORT_PATH="$ODM_REMOTE_USE_IMPORT_PATH"
+export SINGULARITYENV_ODM_REMOTE_USE_IMPORT_PATH="$ODM_REMOTE_USE_IMPORT_PATH"
+export APPTAINERENV_ODM_IMPORT_PATH_BASE="$ODM_IMPORT_PATH_BASE"
+export SINGULARITYENV_ODM_IMPORT_PATH_BASE="$ODM_IMPORT_PATH_BASE"
+if [[ -n "${NODEODM_IMPORT_PATH_ROOTS:-}" ]]; then
+    export APPTAINERENV_NODEODM_IMPORT_PATH_ROOTS="$NODEODM_IMPORT_PATH_ROOTS"
+    export SINGULARITYENV_NODEODM_IMPORT_PATH_ROOTS="$NODEODM_IMPORT_PATH_ROOTS"
+fi
+if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
+    export APPTAINERENV__tapisJobWorkingDir="$_tapisJobWorkingDir"
+    export SINGULARITYENV__tapisJobWorkingDir="$_tapisJobWorkingDir"
+fi
+echo "ODM split-merge import_path: enabled=${ODM_REMOTE_USE_IMPORT_PATH} base=${ODM_IMPORT_PATH_BASE}"
 
 echo "Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)"
 
@@ -852,6 +899,38 @@ if ! apptainer exec "$NODEODM_SIF" /bin/true >> "$LOG_FILE" 2>&1; then
     echo "ERROR: apptainer exec sanity check failed for $NODEODM_SIF"
     exit 1
 fi
+
+echo "ODM runtime patch preflight:"
+echo "  NODEODM_BIND_ARGS=$NODEODM_BIND_ARGS"
+echo "  ODM_REMOTE_PATCH_SOURCE=$ODM_REMOTE_PATCH_SOURCE"
+if [[ -f "$ODM_REMOTE_PATCH_SOURCE" ]]; then
+    echo "  host remote.py sha256: $(sha256sum "$ODM_REMOTE_PATCH_SOURCE" 2>/dev/null | awk '{print $1}')"
+    echo "  host remote.py import_path markers:"
+    grep -n "ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path" "$ODM_REMOTE_PATCH_SOURCE" | head -20 || true
+fi
+apptainer exec \
+    --writable-tmpfs \
+    --bind "$WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json" \
+    $NODEODM_BIND_ARGS \
+    "$NODEODM_SIF" \
+    bash -lc 'set +e
+        echo "  container remote.py path: /code/opendm/remote.py"
+        if command -v sha256sum >/dev/null 2>&1; then sha256sum /code/opendm/remote.py; fi
+        echo "  container remote.py markers:"
+        grep -n "ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path" /code/opendm/remote.py | head -20
+        echo "  container python import:"
+        python3 - <<'"'"'PY'"'"'
+import inspect
+try:
+    import opendm.remote as remote
+    print("opendm.remote.__file__=%s" % getattr(remote, "__file__", "unknown"))
+    print("opendm.remote sha marker present=%s" % ("ODM_REMOTE_USE_IMPORT_PATH" in inspect.getsource(remote)))
+except Exception as e:
+    print("opendm.remote import failed=%s" % e)
+PY
+        echo "  container env import_path vars:"
+        env | sort | grep -E "^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir|APPTAINERENV_ODM_|SINGULARITYENV_ODM_)" || true
+    ' >> "$LOG_FILE" 2>&1 || echo "WARNING: ODM runtime patch preflight failed; continuing so job logs can capture later failure"
 
 # Debug shell mode: keep the job/node alive and skip NodeODM launch so you can attach and run commands manually.
 # Attach from login node with: srun --jobid $SLURM_JOB_ID --pty bash
@@ -914,8 +993,24 @@ rm -f "$NODEODM_EXIT_CODE_FILE"
                 echo \"[LAUNCH] pwd=\$(pwd)\"; \
                 node --version && npm --version || true; \
                 ls -la /var/www | head -40; \
+                echo '[LAUNCH] ODM remote.py diagnostics'; \
+                (sha256sum /code/opendm/remote.py || true); \
+                (grep -n 'ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path' /code/opendm/remote.py | head -20 || true); \
+                python3 - <<'PY' || true; \
+import inspect; \
+try: \
+    import opendm.remote as remote; \
+    print('[LAUNCH] opendm.remote.__file__=%s' % getattr(remote, '__file__', 'unknown')); \
+    print('[LAUNCH] opendm.remote import_path_marker=%s' % ('ODM_REMOTE_USE_IMPORT_PATH' in inspect.getsource(remote))); \
+except Exception as e: \
+    print('[LAUNCH] opendm.remote import failed=%s' % e); \
+PY \
+                env | sort | grep -E '^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir)=' || true; \
                 mkdir -p tmp data logs; \
-                export ODM_IMPORT_PATH_BASE=${ODM_IMPORT_PATH_BASE:-${WORK_DIR}/runtime/data}; \
+                export ODM_AI_MODELS_PATH=\"${ODM_AI_MODELS_PATH}\"; \
+                export ODM_REMOTE_USE_IMPORT_PATH=\"${ODM_REMOTE_USE_IMPORT_PATH}\"; \
+                export ODM_IMPORT_PATH_BASE=\"${ODM_IMPORT_PATH_BASE}\"; \
+                export NODEODM_IMPORT_PATH_ROOTS=\"${NODEODM_IMPORT_PATH_ROOTS:-}\"; \
                 export _tapisJobWorkingDir=${_tapisJobWorkingDir}; \
                 exec node index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL")
     if [[ "$REMORA_ENABLE" == "1" ]] && command -v remora >/dev/null 2>&1; then

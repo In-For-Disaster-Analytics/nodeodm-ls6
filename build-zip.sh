@@ -19,9 +19,10 @@ rm -f $PACKAGE_NAME
 
 # Create ZIP package with all necessary files including webhook scripts
 echo "Creating ZIP package..."
-zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh nodeodm-source \
+zip -r $PACKAGE_NAME tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh nodeodm-source odm-patches \
   -x "nodeodm-source/.git/*" \
-  -x "nodeodm-source/node_modules/*"
+  -x "nodeodm-source/node_modules/*" \
+  -x "odm-patches/__pycache__/*"
 
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh $PACKAGE_NAME | awk '{print $5}')"
@@ -38,6 +39,7 @@ echo "- README-ZIP.md: Documentation"
 echo "- register-node.sh: Webhook registration script for ClusterODM"
 echo "- deregister-node.sh: Webhook de-registration script for ClusterODM"
 echo "- nodeodm-source/: NodeODM source code synced into the runtime"
+echo "- odm-patches/: ODM runtime patches bound into /code"
 
 echo ""
 echo "How it works:"

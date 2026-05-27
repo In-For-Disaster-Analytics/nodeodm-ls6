@@ -1,6 +1,6 @@
 # NodeODM LS6 ZIP Package (Source Overlay)
 
-This ZIP runtime pulls a NodeODM container (default: `ghcr.io/ptdatax/nodeodm:latest`, override with `NODEODM_IMAGE`) for the heavy ODM dependencies, but replaces the application code with a local checkout of the NodeODM repository. This approach lets you run from any commit without waiting for a prebuilt container and keeps us independent of upstream image changes.
+This ZIP runtime pulls a NodeODM container (default: `ghcr.io/wmobley/nodeodm:gpu`, override with `NODEODM_IMAGE`) for the heavy ODM dependencies, but replaces the application code with a local checkout of the NodeODM repository. This approach lets you run from any commit without waiting for a prebuilt container and keeps us independent of upstream image changes.
 
 ## 1. Populate `nodeodm-source/`
 

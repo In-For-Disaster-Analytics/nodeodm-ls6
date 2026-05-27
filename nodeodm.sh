@@ -23,8 +23,8 @@ fi
 # Parse command line arguments
 MAX_CONCURRENCY=${1:-4}
 NODEODM_PORT=${2:-3001}
-# Allow overriding the NodeODM image (default to our fork)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
+# Allow overriding the NodeODM image (default to our GPU fork)
+NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:gpu}
 
 # Load required modules
 module load tacc-apptainer
