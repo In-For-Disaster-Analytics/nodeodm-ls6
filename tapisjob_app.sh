@@ -1000,7 +1000,6 @@ rm -f "$NODEODM_EXIT_CODE_FILE"
                 echo '[LAUNCH] ODM remote.py diagnostics'; \
                 (sha256sum /code/opendm/remote.py || true); \
                 (grep -n 'ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path' /code/opendm/remote.py | head -20 || true); \
-                PYTHONPATH=/code python3 -c 'import inspect; import opendm.remote as remote; print("[LAUNCH] opendm.remote.__file__=%s" % getattr(remote, "__file__", "unknown")); print("[LAUNCH] opendm.remote import_path_marker=%s" % ("ODM_REMOTE_USE_IMPORT_PATH" in inspect.getsource(remote)))' || true; \
                 env | sort | grep -E '^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir)=' || true; \
                 mkdir -p tmp data logs; \
                 export ODM_AI_MODELS_PATH=\"${ODM_AI_MODELS_PATH}\"; \
