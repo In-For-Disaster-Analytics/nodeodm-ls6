@@ -183,13 +183,17 @@ echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_IN
 # Load required modules (from working nodeodm.sh)
 echo "Loading required modules..."
 module load tacc-apptainer
-module load remora || echo "Remora module not available; continuing without it."
 
-# Remora profiling (system-level). Enable/disable with REMORA_ENABLE=0.
-REMORA_ENABLE=${REMORA_ENABLE:-1}
+# Remora profiling (system-level). Keep it opt-in while debugging startup.
+REMORA_ENABLE=${REMORA_ENABLE:-0}
 REMORA_PERIOD=${REMORA_PERIOD:-10}
 REMORA_MODE=${REMORA_MODE:-BASIC}
 export REMORA_PERIOD REMORA_MODE
+if [[ "$REMORA_ENABLE" == "1" ]]; then
+    module load remora || echo "Remora module not available; continuing without it."
+else
+    echo "Remora profiling disabled (REMORA_ENABLE=${REMORA_ENABLE})"
+fi
 
 echo "Working directory: $(pwd)"
 echo "Environment:"
@@ -1099,6 +1103,11 @@ else
         echo "  NodeODM process is still running (PID: $NODEODM_PID)"
     else
         echo "  NodeODM process has died"
+        if [ -f "$NODEODM_EXIT_CODE_FILE" ]; then
+            echo "  NodeODM exit code: $(cat "$NODEODM_EXIT_CODE_FILE")"
+        else
+            echo "  NodeODM exit code file not found: $NODEODM_EXIT_CODE_FILE"
+        fi
     fi
     
     echo "Port check:"
