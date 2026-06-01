@@ -22,8 +22,27 @@ CLUSTERODM_URL=${3:-"https://clusterodm.tacc.utexas.edu"}  # ClusterODM endpoint
 CLUSTERODM_CLI_HOST=${4:-"clusterodm.tacc.utexas.edu"}  # ClusterODM CLI host
 CLUSTERODM_CLI_PORT=${5:-443}  # ClusterODM CLI port
 NODEODM_LOG_LEVEL=silly
+# Detect GPU availability so we pick the matching NodeODM image and only pass
+# --nv (host NVIDIA driver injection, supplies libcuda.so.1) when a GPU exists.
+# A CPU node running the :gpu image would fail densify with exit 127, and --nv
+# on a CPU node only emits a harmless warning, so we branch on both.
+if nvidia-smi >/dev/null 2>&1; then
+    HAS_GPU=1
+elif [[ "${SLURM_JOB_PARTITION:-}" == *gpu* ]]; then
+    HAS_GPU=1
+else
+    HAS_GPU=0
+fi
+
 # Default NodeODM image (override with NODEODM_IMAGE to pin a forked build)
-NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:gpu}
+if [ "$HAS_GPU" = "1" ]; then
+    NV_FLAG="--nv"
+    NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:gpu}
+else
+    NV_FLAG=""
+    NODEODM_IMAGE=${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}
+fi
+echo "GPU detected: $HAS_GPU (partition='${SLURM_JOB_PARTITION:-}', NV_FLAG='$NV_FLAG')"
 # If set to 1, run directly from the container image code (no source overlay bind)
 NODEODM_USE_IMAGE_SOURCE=${NODEODM_USE_IMAGE_SOURCE:-0}
 # If set to 1, skip launching NodeODM (leave the job alive for debugging)
@@ -33,6 +52,13 @@ NODEODM_DEBUG_SHELL=${NODEODM_DEBUG_SHELL:-0}
 NODEODM_DEBUG_SLEEP=${NODEODM_DEBUG_SLEEP:-43200}
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+NODEODM_CHECKPOINT_ROOT=${NODEODM_CHECKPOINT_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media/.nodeodm-checkpoints}
+NODEODM_CHECKPOINT_INTERVAL_SECONDS=${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}
+NODEODM_RESUME_TASK_UUID=${NODEODM_RESUME_TASK_UUID:-}
+NODEODM_RESUME_CHECKPOINT_PATH=${NODEODM_RESUME_CHECKPOINT_PATH:-}
+NODEODM_RESUME_OPTIONS_JSON=${NODEODM_RESUME_OPTIONS_JSON:-}
+CHECKPOINT_LAST_SYNC=0
+CHECKPOINT_SYNCING=0
 
 # Use Tapis environment variables for input/output directories  
 INPUT_DIR="${_tapisExecSystemInputDir}"
@@ -641,6 +667,298 @@ PY
     fi
 }
 
+function parse_task_status() {
+    local payload="$1"
+    if command -v python3 >/dev/null 2>&1; then
+        STATUS_PAYLOAD="$payload" python3 <<'PY'
+import json
+import os
+
+payload = os.environ.get("STATUS_PAYLOAD", "")
+code_map = {10: "QUEUED", 20: "RUNNING", 30: "FAILED", 40: "COMPLETED", 50: "CANCELED"}
+try:
+    data = json.loads(payload)
+    status = data.get("status")
+    if isinstance(status, dict):
+        print(code_map.get(int(status.get("code")), ""))
+    elif isinstance(status, str):
+        print(status)
+    else:
+        print("")
+except Exception:
+    print("")
+PY
+    else
+        echo "$payload" | grep -o '"status":"[^"]*"' | cut -d'"' -f4
+    fi
+}
+
+function parse_task_progress() {
+    local payload="$1"
+    if command -v python3 >/dev/null 2>&1; then
+        STATUS_PAYLOAD="$payload" python3 <<'PY'
+import json
+import os
+
+try:
+    data = json.loads(os.environ.get("STATUS_PAYLOAD", ""))
+    progress = data.get("progress", 0)
+    print(int(float(progress)))
+except Exception:
+    print("0")
+PY
+    else
+        echo "$payload" | grep -o '"progress":[0-9]*' | cut -d':' -f2
+    fi
+}
+
+function checkpoint_dir_for_task() {
+    local uuid="$1"
+    if [ -n "$NODEODM_RESUME_CHECKPOINT_PATH" ] && [ "$uuid" = "${NODEODM_RESUME_TASK_UUID:-}" ]; then
+        printf "%s\n" "$NODEODM_RESUME_CHECKPOINT_PATH"
+    else
+        printf "%s/%s\n" "${NODEODM_CHECKPOINT_ROOT%/}" "$uuid"
+    fi
+}
+
+function checkpoint_write_manifest() {
+    local checkpoint_dir="$1"
+    local uuid="$2"
+    local reason="${3:-periodic}"
+    local status_json="${STATUS_RESPONSE:-}"
+    local import_path=""
+
+    if [ -L "$NODEODM_RUNTIME_DIR/data/$uuid/images" ]; then
+        import_path=$(readlink "$NODEODM_RUNTIME_DIR/data/$uuid/images" 2>/dev/null || true)
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        CHECKPOINT_DIR="$checkpoint_dir" \
+        CHECKPOINT_UUID="$uuid" \
+        CHECKPOINT_REASON="$reason" \
+        CHECKPOINT_JOB_UUID="${_tapisJobUUID:-}" \
+        CHECKPOINT_JOB_OWNER="${_tapisJobOwner:-}" \
+        CHECKPOINT_IMPORT_PATH="$import_path" \
+        CHECKPOINT_STATUS_JSON="$status_json" \
+        CHECKPOINT_TASKS_JSON="$NODEODM_RUNTIME_DIR/data/tasks.json" \
+        CHECKPOINT_IMAGES_DIR="$NODEODM_RUNTIME_DIR/data/$uuid/images" \
+        python3 <<'PY'
+import json
+import os
+import time
+
+checkpoint_dir = os.environ["CHECKPOINT_DIR"]
+uuid = os.environ["CHECKPOINT_UUID"]
+status_json = os.environ.get("CHECKPOINT_STATUS_JSON", "")
+tasks_json = os.environ.get("CHECKPOINT_TASKS_JSON", "")
+
+task_info = {}
+try:
+    if status_json.strip():
+        task_info = json.loads(status_json)
+except Exception:
+    task_info = {}
+
+if not task_info and os.path.exists(tasks_json):
+    try:
+        with open(tasks_json) as f:
+            for task in json.load(f):
+                if task.get("uuid") == uuid:
+                    task_info = task
+                    break
+    except Exception:
+        task_info = {}
+
+manifest = {
+    "uuid": uuid,
+    "name": task_info.get("name"),
+    "status": task_info.get("status"),
+    "progress": task_info.get("progress", 0),
+    "options": task_info.get("options", []),
+    "imagesCount": task_info.get("imagesCount"),
+    "importPath": os.environ.get("CHECKPOINT_IMPORT_PATH") or None,
+    "tapisJobUuid": os.environ.get("CHECKPOINT_JOB_UUID") or None,
+    "tapisJobOwner": os.environ.get("CHECKPOINT_JOB_OWNER") or None,
+    "reason": os.environ.get("CHECKPOINT_REASON") or "periodic",
+    "updatedAt": int(time.time()),
+}
+
+if manifest["imagesCount"] is None:
+    image_dir = os.environ.get("CHECKPOINT_IMAGES_DIR", "")
+    exts = (".jpg", ".jpeg", ".png", ".tif", ".tiff")
+    count = 0
+    if image_dir and os.path.isdir(image_dir):
+        for root, _dirs, files in os.walk(image_dir):
+            count += sum(1 for name in files if name.lower().endswith(exts))
+    manifest["imagesCount"] = count or None
+
+os.makedirs(checkpoint_dir, exist_ok=True)
+tmp_path = os.path.join(checkpoint_dir, "manifest.json.tmp")
+final_path = os.path.join(checkpoint_dir, "manifest.json")
+with open(tmp_path, "w") as f:
+    json.dump(manifest, f, indent=2, sort_keys=True)
+    f.write("\n")
+os.replace(tmp_path, final_path)
+PY
+    else
+        cat > "$checkpoint_dir/manifest.json.tmp" <<EOF
+{"uuid":"$uuid","reason":"$reason","updatedAt":$(date +%s)}
+EOF
+        mv "$checkpoint_dir/manifest.json.tmp" "$checkpoint_dir/manifest.json"
+    fi
+}
+
+function checkpoint_sync() {
+    local reason="${1:-periodic}"
+    local uuid="${2:-${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}}"
+    if [ -z "$uuid" ] || [ -z "${NODEODM_CHECKPOINT_ROOT:-}" ]; then
+        return 0
+    fi
+    if [ "$CHECKPOINT_SYNCING" = "1" ]; then
+        return 0
+    fi
+
+    local had_errexit=0
+    case "$-" in *e*) had_errexit=1; set +e ;; esac
+    CHECKPOINT_SYNCING=1
+
+    local checkpoint_dir
+    checkpoint_dir=$(checkpoint_dir_for_task "$uuid")
+    mkdir -p "$checkpoint_dir/data" "$checkpoint_dir/logs"
+
+    if [ -d "$NODEODM_RUNTIME_DIR/data/$uuid" ]; then
+        mkdir -p "$checkpoint_dir/data/$uuid"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --delete "$NODEODM_RUNTIME_DIR/data/$uuid/" "$checkpoint_dir/data/$uuid/"
+        else
+            rm -rf "$checkpoint_dir/data/$uuid"
+            mkdir -p "$checkpoint_dir/data"
+            cp -a "$NODEODM_RUNTIME_DIR/data/$uuid" "$checkpoint_dir/data/"
+        fi
+    fi
+
+    if [ -f "$NODEODM_RUNTIME_DIR/data/tasks.json" ]; then
+        cp "$NODEODM_RUNTIME_DIR/data/tasks.json" "$checkpoint_dir/data/tasks.json"
+    fi
+
+    if [ -f "$LOG_FILE" ]; then
+        cp "$LOG_FILE" "$checkpoint_dir/logs/nodeodm.log"
+    fi
+    if [ -n "$OUTPUT_DIR" ] && [ -f "$OUTPUT_DIR/task_output.txt" ]; then
+        cp "$OUTPUT_DIR/task_output.txt" "$checkpoint_dir/logs/task_output.txt"
+    fi
+
+    checkpoint_write_manifest "$checkpoint_dir" "$uuid" "$reason"
+    CHECKPOINT_LAST_SYNC=$(date +%s)
+    CHECKPOINT_SYNCING=0
+    echo "Checkpoint sync complete for $uuid ($reason): $checkpoint_dir"
+
+    if [ "$had_errexit" = "1" ]; then set -e; fi
+    return 0
+}
+
+function maybe_checkpoint_sync() {
+    local uuid="${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}"
+    if [ -z "$uuid" ]; then
+        return 0
+    fi
+    local now
+    now=$(date +%s)
+    local interval="${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}"
+    if ! [[ "$interval" =~ ^[0-9]+$ ]] || [ "$interval" -le 0 ]; then
+        return 0
+    fi
+    if [ "$CHECKPOINT_LAST_SYNC" -eq 0 ] || [ $((now - CHECKPOINT_LAST_SYNC)) -ge "$interval" ]; then
+        checkpoint_sync "periodic" "$uuid"
+    fi
+}
+
+function checkpoint_apply_resume_state() {
+    local uuid="$1"
+    local tasks_file="$NODEODM_RUNTIME_DIR/data/tasks.json"
+    if [ -z "$uuid" ] || [ ! -f "$tasks_file" ]; then
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 is required to update restored NodeODM task state"
+        return 1
+    fi
+
+    RESUME_UUID="$uuid" \
+    RESUME_OPTIONS_JSON="$NODEODM_RESUME_OPTIONS_JSON" \
+    TASKS_FILE="$tasks_file" \
+    python3 <<'PY'
+import json
+import os
+
+tasks_file = os.environ["TASKS_FILE"]
+uuid = os.environ["RESUME_UUID"]
+options_json = os.environ.get("RESUME_OPTIONS_JSON", "")
+
+with open(tasks_file) as f:
+    tasks = json.load(f)
+
+updated = False
+for task in tasks:
+    if task.get("uuid") != uuid:
+        continue
+    task["status"] = {"code": 10}
+    if options_json.strip():
+        try:
+            options = json.loads(options_json)
+            if isinstance(options, list):
+                task["options"] = options
+        except Exception:
+            pass
+    updated = True
+    break
+
+if not updated:
+    raise SystemExit("task %s not found in %s" % (uuid, tasks_file))
+
+tmp_path = tasks_file + ".tmp"
+with open(tmp_path, "w") as f:
+    json.dump(tasks, f, indent=2)
+    f.write("\n")
+os.replace(tmp_path, tasks_file)
+PY
+}
+
+function checkpoint_restore_if_requested() {
+    local uuid="${NODEODM_RESUME_TASK_UUID:-}"
+    if [ -z "$uuid" ]; then
+        return 0
+    fi
+
+    local checkpoint_dir
+    checkpoint_dir=$(checkpoint_dir_for_task "$uuid")
+    echo "Restoring checkpoint for task $uuid from $checkpoint_dir"
+
+    if [ ! -d "$checkpoint_dir" ]; then
+        echo "ERROR: checkpoint directory does not exist: $checkpoint_dir"
+        return 1
+    fi
+
+    mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/logs"
+    if [ -d "$checkpoint_dir/data" ]; then
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$checkpoint_dir/data/" "$NODEODM_RUNTIME_DIR/data/"
+        else
+            cp -a "$checkpoint_dir/data"/. "$NODEODM_RUNTIME_DIR/data/"
+        fi
+    fi
+    if [ -d "$checkpoint_dir/logs" ]; then
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$checkpoint_dir/logs/" "$NODEODM_RUNTIME_DIR/logs/"
+        else
+            cp -a "$checkpoint_dir/logs"/. "$NODEODM_RUNTIME_DIR/logs/"
+        fi
+    fi
+
+    checkpoint_apply_resume_state "$uuid"
+    echo "Checkpoint restore complete for $uuid"
+}
+
 # Function to notify ClusterODM that NodeODM job is complete
 function notify_clusterodm_complete() {
     echo "Notifying ClusterODM that job is complete..."
@@ -752,6 +1070,8 @@ cleanup() {
     local exit_code=$?
     echo "Cleaning up processes (exit code: $exit_code)..."
 
+    checkpoint_sync "exit" "${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}" || true
+
     # Always notify PTDataX that NodeODM is shutting down (non-blocking)
     send_nodeodm_status_to_ptdatax "shutdown" "NodeODM instance shutting down - job ${_tapisJobUUID} complete"
 
@@ -785,6 +1105,11 @@ cleanup() {
 }
 # Trap cleanup on exit
 trap cleanup EXIT
+
+if ! checkpoint_restore_if_requested; then
+    echo "ERROR: checkpoint restore failed"
+    exit 1
+fi
 
 # Set up TAP token first (needed for NodeODM authentication)
 echo "Setting up TAP authentication..."
@@ -913,6 +1238,7 @@ if [[ -f "$ODM_REMOTE_PATCH_SOURCE" ]]; then
     grep -n "ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path" "$ODM_REMOTE_PATCH_SOURCE" | head -20 || true
 fi
 apptainer exec \
+    $NV_FLAG \
     --writable-tmpfs \
     --bind "$WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json" \
     $NODEODM_BIND_ARGS \
@@ -946,7 +1272,7 @@ if [[ "${NODEODM_DEBUG_SHELL:-0}" == "1" ]]; then
     echo "  srun --jobid ${SLURM_JOB_ID:-<jobid>} --pty bash"
     echo ""
     echo "Inside the node, to enter the container:"
-    echo "  apptainer shell --writable-tmpfs \\"
+    echo "  apptainer shell $NV_FLAG --writable-tmpfs \\"
     echo "    --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \\"
     echo "    $NODEODM_BIND_ARGS \\"
     echo "    \"$NODEODM_SIF\""
@@ -976,6 +1302,7 @@ NODEODM_EXIT_CODE_FILE="$WORK_DIR/nodeodm_exit_code"
 rm -f "$NODEODM_EXIT_CODE_FILE"
 (
     RUN_CMD=(apptainer exec \
+        $NV_FLAG \
         --writable-tmpfs \
         --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
         $NODEODM_BIND_ARGS \
@@ -1040,6 +1367,7 @@ if ! kill -0 $NODEODM_PID 2>/dev/null; then
         echo "Re-running container once with NODEODM_DEBUG_START=1 for diagnostics..."
         NODEODM_DEBUG_START=1 \
         apptainer exec \
+            $NV_FLAG \
             --writable-tmpfs \
             --bind $WORK_DIR/nodeodm-config.json:/tmp/nodeodm-config.json \
             $NODEODM_BIND_ARGS \
@@ -1190,7 +1518,11 @@ function register_with_clusterodm() {
     echo "Debug: Full URL='$CLUSTERODM_URL/webhook/register-node'"
 
     # Prepare JSON payload with Tapis job owner for user-based authentication
-    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"}"
+    RESUME_JSON_FIELDS=""
+    if [ -n "${NODEODM_RESUME_TASK_UUID:-}" ]; then
+        RESUME_JSON_FIELDS=", \"checkpointResume\": true, \"resumeTaskUuid\": \"${NODEODM_RESUME_TASK_UUID}\""
+    fi
+    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"${RESUME_JSON_FIELDS}}"
     echo "Debug: JSON payload='$JSON_PAYLOAD'"
 
     # Show the exact curl command for manual testing
@@ -1396,11 +1728,12 @@ while true; do
         # Get task info to check status
         echo "🔧 CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
         STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
-        STATUS=$(echo "$STATUS_RESPONSE" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+        STATUS=$(parse_task_status "$STATUS_RESPONSE")
 
         if [ "$STATUS" = "QUEUED" ] || [ "$STATUS" = "RUNNING" ]; then
             echo "Task $TASK_UUID is processing, monitoring progress..."
             send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID"
+            checkpoint_sync "task-start" "$TASK_UUID"
             break
         fi
     fi
@@ -1422,16 +1755,18 @@ echo "Monitoring task progress for $TASK_UUID..."
 while true; do
     echo "🔧 CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
     STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
-    STATUS=$(echo "$STATUS_RESPONSE" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-    PROGRESS=$(echo "$STATUS_RESPONSE" | grep -o '"progress":[0-9]*' | cut -d':' -f2)
+    STATUS=$(parse_task_status "$STATUS_RESPONSE")
+    PROGRESS=$(parse_task_progress "$STATUS_RESPONSE")
 
     echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
     stream_task_output
+    maybe_checkpoint_sync
 
     case $STATUS in
         "COMPLETED")
             echo "✓ Task completed successfully"
             send_nodeodm_status_to_ptdatax "complete" "NodeODM task $TASK_UUID completed successfully"
+            checkpoint_sync "completed" "$TASK_UUID"
             break
             ;;
         "FAILED")
@@ -1440,12 +1775,14 @@ while true; do
             echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
             send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
             stream_task_output
+            checkpoint_sync "failed" "$TASK_UUID"
             exit 1
             ;;
         "CANCELED")
             echo "✗ Task was canceled"
             send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
             stream_task_output
+            checkpoint_sync "canceled" "$TASK_UUID"
             exit 1
             ;;
         *)
