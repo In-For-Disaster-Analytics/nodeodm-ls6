@@ -82,6 +82,11 @@
           "key": "TAPIS_ACCESS_TOKEN",
           "value": "${_tapisAccessToken}",
           "description": "Tapis JWT access token for ClusterODM authentication"
+        },
+        {
+          "key": "NODEODM_CLEANUP_MINUTES",
+          "value": "0",
+          "description": "Minutes before NodeODM deletes completed or canceled task data. 0 disables NodeODM cleanup so Tapis/Slurm owns lifecycle cleanup."
         }
       ],
       "archiveFilter": {
