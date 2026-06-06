@@ -34,10 +34,9 @@ The `app.json` file defines resource allocation tiers based on dataset size:
 ```json
 {
   "id": "nodeodm-ls62",
-  "version": "1.0.8-clusterodm-integration",
+  "version": "1.0.14",
   "runtime": "ZIP",
-  "runtimeOptions": ["SINGULARITY_RUN"],
-  "containerImage": "https://github.com/wmobley/nodeodm-ls6/releases/download/v1.0.8/nodeodm-ls6-v1.0.8.zip"
+  "containerImage": "tapis://ptdatax.project.PTDATAX-225/NodeODM/nodeodm-ls6.zip"
 }
 ```
 

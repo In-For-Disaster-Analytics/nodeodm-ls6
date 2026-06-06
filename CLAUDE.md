@@ -103,8 +103,8 @@ Scripts integrate with TACC Access Portal (TAP) for web access:
 
 ### ZIP Runtime Deployment
 1. **Package Creation**: Build ZIP with application files
-2. **Upload**: Deploy ZIP to accessible URL (GitHub releases, etc.)
-3. **Configuration**: Update `containerImage` in app.json
+2. **Upload**: Deploy ZIP to Corral with plain SSH/SCP through the `ls6` SSH alias
+3. **Configuration**: Confirm `containerImage` in app.json matches the uploaded ZIP
 4. **Submission**: Submit via Tapis API or web interface
 5. **Execution**: Tapis extracts ZIP and runs `tapisjob_app.sh`
 

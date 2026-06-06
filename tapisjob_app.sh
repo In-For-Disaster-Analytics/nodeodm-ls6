@@ -54,9 +54,18 @@ ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 NODEODM_CHECKPOINT_ROOT=${NODEODM_CHECKPOINT_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media/.nodeodm-checkpoints}
 NODEODM_CHECKPOINT_INTERVAL_SECONDS=${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}
+NODEODM_CHECKPOINT_RETENTION_SECONDS=${NODEODM_CHECKPOINT_RETENTION_SECONDS:-604800}
+NODEODM_CHECKPOINT_COPY_DATA=${NODEODM_CHECKPOINT_COPY_DATA:-0}
 NODEODM_RESUME_TASK_UUID=${NODEODM_RESUME_TASK_UUID:-}
 NODEODM_RESUME_CHECKPOINT_PATH=${NODEODM_RESUME_CHECKPOINT_PATH:-}
+NODEODM_RESUME_DATA_PATH=${NODEODM_RESUME_DATA_PATH:-}
+NODEODM_RESUME_RUNTIME_PATH=${NODEODM_RESUME_RUNTIME_PATH:-}
+NODEODM_RESUME_IMPORT_PATH=${NODEODM_RESUME_IMPORT_PATH:-}
+NODEODM_RESUME_ALLOW_COLD_START=${NODEODM_RESUME_ALLOW_COLD_START:-1}
+NODEODM_RESUME_ALLOWED_ROOTS=${NODEODM_RESUME_ALLOWED_ROOTS:-${SCRATCH:-/scratch}:/scratch}
 NODEODM_RESUME_OPTIONS_JSON=${NODEODM_RESUME_OPTIONS_JSON:-}
+NODEODM_RESUME_MODE=${NODEODM_RESUME_MODE:-}
+NODEODM_RESUME_FALLBACK_REASON=${NODEODM_RESUME_FALLBACK_REASON:-}
 CHECKPOINT_LAST_SYNC=0
 CHECKPOINT_SYNCING=0
 
@@ -359,10 +368,24 @@ if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
     SCRATCH_BIND="--bind ${_tapisJobWorkingDir}:${_tapisJobWorkingDir}:rw"
 fi
 
+RESUME_BIND=""
+function add_resume_bind() {
+    local bind_path="$1"
+    if [[ -z "$bind_path" || ! -d "$bind_path" ]]; then
+        return 0
+    fi
+    case " $RESUME_BIND " in
+        *" --bind ${bind_path}:${bind_path}:rw "*) return 0 ;;
+    esac
+    RESUME_BIND="${RESUME_BIND} --bind ${bind_path}:${bind_path}:rw"
+}
+add_resume_bind "$NODEODM_RESUME_RUNTIME_PATH"
+add_resume_bind "$NODEODM_RESUME_DATA_PATH"
+
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND} ${RESUME_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
 else
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND} ${RESUME_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
 fi
 
 echo "Runtime directory prepared:"
@@ -721,12 +744,34 @@ function checkpoint_dir_for_task() {
     fi
 }
 
+function checkpoint_resolve_path() {
+    local raw_path="$1"
+    if [ -z "$raw_path" ]; then
+        return 0
+    fi
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -m "$raw_path" 2>/dev/null || printf "%s\n" "$raw_path"
+    elif command -v readlink >/dev/null 2>&1; then
+        readlink -f "$raw_path" 2>/dev/null || printf "%s\n" "$raw_path"
+    else
+        printf "%s\n" "$raw_path"
+    fi
+}
+
 function checkpoint_write_manifest() {
     local checkpoint_dir="$1"
     local uuid="$2"
     local reason="${3:-periodic}"
     local status_json="${STATUS_RESPONSE:-}"
     local import_path=""
+    local task_dir="$NODEODM_RUNTIME_DIR/data/$uuid"
+    local scratch_runtime_dir
+    local scratch_data_dir
+    local scratch_task_dir
+
+    scratch_runtime_dir=$(checkpoint_resolve_path "$NODEODM_RUNTIME_DIR")
+    scratch_data_dir=$(checkpoint_resolve_path "$NODEODM_RUNTIME_DIR/data")
+    scratch_task_dir=$(checkpoint_resolve_path "$task_dir")
 
     if [ -L "$NODEODM_RUNTIME_DIR/data/$uuid/images" ]; then
         import_path=$(readlink "$NODEODM_RUNTIME_DIR/data/$uuid/images" 2>/dev/null || true)
@@ -739,6 +784,14 @@ function checkpoint_write_manifest() {
         CHECKPOINT_JOB_UUID="${_tapisJobUUID:-}" \
         CHECKPOINT_JOB_OWNER="${_tapisJobOwner:-}" \
         CHECKPOINT_IMPORT_PATH="$import_path" \
+        CHECKPOINT_RESUME_IMPORT_PATH="${NODEODM_RESUME_IMPORT_PATH:-}" \
+        CHECKPOINT_SCRATCH_RUNTIME_DIR="$scratch_runtime_dir" \
+        CHECKPOINT_SCRATCH_DATA_DIR="$scratch_data_dir" \
+        CHECKPOINT_SCRATCH_TASK_DIR="$scratch_task_dir" \
+        CHECKPOINT_RESUME_MODE="${NODEODM_RESUME_MODE:-}" \
+        CHECKPOINT_RESUME_FALLBACK_REASON="${NODEODM_RESUME_FALLBACK_REASON:-}" \
+        CHECKPOINT_RETENTION_SECONDS="${NODEODM_CHECKPOINT_RETENTION_SECONDS:-604800}" \
+        CHECKPOINT_COPY_DATA="${NODEODM_CHECKPOINT_COPY_DATA:-0}" \
         CHECKPOINT_STATUS_JSON="$status_json" \
         CHECKPOINT_TASKS_JSON="$NODEODM_RUNTIME_DIR/data/tasks.json" \
         CHECKPOINT_IMAGES_DIR="$NODEODM_RUNTIME_DIR/data/$uuid/images" \
@@ -776,12 +829,36 @@ manifest = {
     "progress": task_info.get("progress", 0),
     "options": task_info.get("options", []),
     "imagesCount": task_info.get("imagesCount"),
-    "importPath": os.environ.get("CHECKPOINT_IMPORT_PATH") or None,
+    "importPath": os.environ.get("CHECKPOINT_IMPORT_PATH") or os.environ.get("CHECKPOINT_RESUME_IMPORT_PATH") or None,
     "tapisJobUuid": os.environ.get("CHECKPOINT_JOB_UUID") or None,
     "tapisJobOwner": os.environ.get("CHECKPOINT_JOB_OWNER") or None,
     "reason": os.environ.get("CHECKPOINT_REASON") or "periodic",
+    "state": "active",
+    "checkpointStorage": "copy" if os.environ.get("CHECKPOINT_COPY_DATA") == "1" else "manifest",
+    "scratchRuntimeDir": os.environ.get("CHECKPOINT_SCRATCH_RUNTIME_DIR") or None,
+    "scratchDataDir": os.environ.get("CHECKPOINT_SCRATCH_DATA_DIR") or None,
+    "scratchTaskDir": os.environ.get("CHECKPOINT_SCRATCH_TASK_DIR") or None,
+    "resumeMode": os.environ.get("CHECKPOINT_RESUME_MODE") or None,
+    "resumeFallbackReason": os.environ.get("CHECKPOINT_RESUME_FALLBACK_REASON") or None,
     "updatedAt": int(time.time()),
 }
+
+reason = manifest["reason"]
+if reason in ("completed",):
+    manifest["state"] = "completed"
+elif reason in ("failed", "canceled"):
+    manifest["state"] = reason
+elif reason in ("scratch-missing", "scratch-unreadable", "resume-unusable", "expired"):
+    manifest["state"] = "expired"
+elif reason in ("exit",):
+    manifest["state"] = "resumable"
+
+try:
+    retention = int(os.environ.get("CHECKPOINT_RETENTION_SECONDS") or "604800")
+except Exception:
+    retention = 604800
+if retention > 0:
+    manifest["expiresAt"] = manifest["updatedAt"] + retention
 
 if manifest["imagesCount"] is None:
     image_dir = os.environ.get("CHECKPOINT_IMAGES_DIR", "")
@@ -824,34 +901,42 @@ function checkpoint_sync() {
 
     local checkpoint_dir
     checkpoint_dir=$(checkpoint_dir_for_task "$uuid")
-    mkdir -p "$checkpoint_dir/data" "$checkpoint_dir/logs"
+    mkdir -p "$checkpoint_dir"
 
-    if [ -d "$NODEODM_RUNTIME_DIR/data/$uuid" ]; then
-        mkdir -p "$checkpoint_dir/data/$uuid"
-        if command -v rsync >/dev/null 2>&1; then
-            rsync -a --delete "$NODEODM_RUNTIME_DIR/data/$uuid/" "$checkpoint_dir/data/$uuid/"
-        else
-            rm -rf "$checkpoint_dir/data/$uuid"
-            mkdir -p "$checkpoint_dir/data"
-            cp -a "$NODEODM_RUNTIME_DIR/data/$uuid" "$checkpoint_dir/data/"
+    if [ "${NODEODM_CHECKPOINT_COPY_DATA:-0}" = "1" ]; then
+        mkdir -p "$checkpoint_dir/data" "$checkpoint_dir/logs"
+
+        if [ -d "$NODEODM_RUNTIME_DIR/data/$uuid" ]; then
+            mkdir -p "$checkpoint_dir/data/$uuid"
+            if command -v rsync >/dev/null 2>&1; then
+                rsync -a --delete "$NODEODM_RUNTIME_DIR/data/$uuid/" "$checkpoint_dir/data/$uuid/"
+            else
+                rm -rf "$checkpoint_dir/data/$uuid"
+                mkdir -p "$checkpoint_dir/data"
+                cp -a "$NODEODM_RUNTIME_DIR/data/$uuid" "$checkpoint_dir/data/"
+            fi
         fi
-    fi
 
-    if [ -f "$NODEODM_RUNTIME_DIR/data/tasks.json" ]; then
-        cp "$NODEODM_RUNTIME_DIR/data/tasks.json" "$checkpoint_dir/data/tasks.json"
-    fi
+        if [ -f "$NODEODM_RUNTIME_DIR/data/tasks.json" ]; then
+            cp "$NODEODM_RUNTIME_DIR/data/tasks.json" "$checkpoint_dir/data/tasks.json"
+        fi
 
-    if [ -f "$LOG_FILE" ]; then
-        cp "$LOG_FILE" "$checkpoint_dir/logs/nodeodm.log"
-    fi
-    if [ -n "$OUTPUT_DIR" ] && [ -f "$OUTPUT_DIR/task_output.txt" ]; then
-        cp "$OUTPUT_DIR/task_output.txt" "$checkpoint_dir/logs/task_output.txt"
+        if [ -f "$LOG_FILE" ]; then
+            cp "$LOG_FILE" "$checkpoint_dir/logs/nodeodm.log"
+        fi
+        if [ -n "$OUTPUT_DIR" ] && [ -f "$OUTPUT_DIR/task_output.txt" ]; then
+            cp "$OUTPUT_DIR/task_output.txt" "$checkpoint_dir/logs/task_output.txt"
+        fi
     fi
 
     checkpoint_write_manifest "$checkpoint_dir" "$uuid" "$reason"
     CHECKPOINT_LAST_SYNC=$(date +%s)
     CHECKPOINT_SYNCING=0
-    echo "Checkpoint sync complete for $uuid ($reason): $checkpoint_dir"
+    if [ "${NODEODM_CHECKPOINT_COPY_DATA:-0}" = "1" ]; then
+        echo "Checkpoint sync complete for $uuid ($reason): $checkpoint_dir"
+    else
+        echo "Checkpoint manifest updated for $uuid ($reason): $checkpoint_dir"
+    fi
 
     if [ "$had_errexit" = "1" ]; then set -e; fi
     return 0
@@ -924,19 +1009,133 @@ os.replace(tmp_path, tasks_file)
 PY
 }
 
+function checkpoint_path_allowed_for_resume() {
+    local resume_path="$1"
+    if [ -z "$resume_path" ]; then
+        return 1
+    fi
+    RESUME_PATH="$resume_path" RESUME_ALLOWED_ROOTS="$NODEODM_RESUME_ALLOWED_ROOTS" python3 <<'PY'
+import os
+import sys
+
+raw_path = os.environ.get("RESUME_PATH", "")
+roots = [r for r in os.environ.get("RESUME_ALLOWED_ROOTS", "").split(os.pathsep) if r]
+if not raw_path.startswith("/") or "\0" in raw_path:
+    sys.exit(1)
+
+resume_path = os.path.realpath(raw_path)
+for root in roots:
+    if not root.startswith("/"):
+        continue
+    root = os.path.realpath(root)
+    if resume_path == root or resume_path.startswith(root.rstrip("/") + "/"):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+function checkpoint_prepare_cold_start() {
+    local uuid="$1"
+    local reason="${2:-resume-unusable}"
+
+    NODEODM_RESUME_MODE="cold-start"
+    NODEODM_RESUME_FALLBACK_REASON="$reason"
+    echo "Checkpoint resume unavailable for $uuid ($reason); falling back to cold start from import_path"
+    checkpoint_sync "$reason" "$uuid" || true
+
+    if [ "${NODEODM_RESUME_ALLOW_COLD_START:-1}" = "1" ] && [ -n "${NODEODM_RESUME_IMPORT_PATH:-}" ]; then
+        return 0
+    fi
+
+    echo "ERROR: checkpoint resume failed and cold-start fallback is unavailable"
+    return 1
+}
+
+function checkpoint_restore_from_scratch() {
+    local uuid="$1"
+    local resume_task_dir="${NODEODM_RESUME_DATA_PATH%/}"
+    local resume_runtime_dir="${NODEODM_RESUME_RUNTIME_PATH%/}"
+    local resume_data_dir=""
+    local tasks_src=""
+
+    if [ -z "$resume_task_dir" ]; then
+        echo "No NODEODM_RESUME_DATA_PATH provided for scratch resume"
+        return 1
+    fi
+    if ! checkpoint_path_allowed_for_resume "$resume_task_dir"; then
+        echo "Scratch resume path is outside allowed roots: $resume_task_dir"
+        return 1
+    fi
+    if [ ! -d "$resume_task_dir" ] || [ ! -r "$resume_task_dir" ] || [ ! -x "$resume_task_dir" ]; then
+        echo "Scratch resume task directory is missing or unreadable: $resume_task_dir"
+        return 1
+    fi
+
+    resume_data_dir=$(dirname "$resume_task_dir")
+    tasks_src="$resume_data_dir/tasks.json"
+    if [ ! -f "$tasks_src" ] && [ -n "$resume_runtime_dir" ]; then
+        tasks_src="$resume_runtime_dir/data/tasks.json"
+    fi
+    if [ ! -f "$tasks_src" ] || [ ! -r "$tasks_src" ]; then
+        echo "Scratch resume tasks.json is missing or unreadable for $uuid"
+        return 1
+    fi
+
+    RESUME_UUID="$uuid" TASKS_FILE="$tasks_src" python3 <<'PY'
+import json
+import os
+import sys
+
+uuid = os.environ["RESUME_UUID"]
+tasks_file = os.environ["TASKS_FILE"]
+try:
+    with open(tasks_file) as f:
+        tasks = json.load(f)
+except Exception as exc:
+    print("Could not read resume tasks.json: %s" % exc)
+    sys.exit(1)
+
+if not any(task.get("uuid") == uuid for task in tasks if isinstance(task, dict)):
+    print("Resume tasks.json does not contain task %s" % uuid)
+    sys.exit(1)
+PY
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+
+    mkdir -p "$NODEODM_RUNTIME_DIR/data"
+    rm -rf "$NODEODM_RUNTIME_DIR/data/$uuid"
+    ln -s "$resume_task_dir" "$NODEODM_RUNTIME_DIR/data/$uuid"
+    cp "$tasks_src" "$NODEODM_RUNTIME_DIR/data/tasks.json"
+
+    checkpoint_apply_resume_state "$uuid"
+    NODEODM_RESUME_MODE="scratch"
+    NODEODM_RESUME_FALLBACK_REASON=""
+    echo "Scratch checkpoint restore complete for $uuid from $resume_task_dir"
+}
+
 function checkpoint_restore_if_requested() {
     local uuid="${NODEODM_RESUME_TASK_UUID:-}"
     if [ -z "$uuid" ]; then
         return 0
     fi
 
+    if [ -n "${NODEODM_RESUME_DATA_PATH:-}" ]; then
+        echo "Attempting scratch checkpoint restore for task $uuid from $NODEODM_RESUME_DATA_PATH"
+        if checkpoint_restore_from_scratch "$uuid"; then
+            return 0
+        fi
+        checkpoint_prepare_cold_start "$uuid" "scratch-missing"
+        return $?
+    fi
+
     local checkpoint_dir
     checkpoint_dir=$(checkpoint_dir_for_task "$uuid")
-    echo "Restoring checkpoint for task $uuid from $checkpoint_dir"
+    echo "Restoring legacy copied checkpoint for task $uuid from $checkpoint_dir"
 
     if [ ! -d "$checkpoint_dir" ]; then
-        echo "ERROR: checkpoint directory does not exist: $checkpoint_dir"
-        return 1
+        checkpoint_prepare_cold_start "$uuid" "checkpoint-missing"
+        return $?
     fi
 
     mkdir -p "$NODEODM_RUNTIME_DIR/data" "$NODEODM_RUNTIME_DIR/logs"
@@ -956,7 +1155,8 @@ function checkpoint_restore_if_requested() {
     fi
 
     checkpoint_apply_resume_state "$uuid"
-    echo "Checkpoint restore complete for $uuid"
+    NODEODM_RESUME_MODE="legacy"
+    echo "Legacy copied checkpoint restore complete for $uuid"
 }
 
 # Function to notify ClusterODM that NodeODM job is complete
@@ -1524,7 +1724,7 @@ function register_with_clusterodm() {
     # Prepare JSON payload with Tapis job owner for user-based authentication
     RESUME_JSON_FIELDS=""
     if [ -n "${NODEODM_RESUME_TASK_UUID:-}" ]; then
-        RESUME_JSON_FIELDS=", \"checkpointResume\": true, \"resumeTaskUuid\": \"${NODEODM_RESUME_TASK_UUID}\""
+        RESUME_JSON_FIELDS=", \"checkpointResume\": true, \"resumeTaskUuid\": \"${NODEODM_RESUME_TASK_UUID}\", \"resumeMode\": \"${NODEODM_RESUME_MODE:-unknown}\", \"resumeFallbackReason\": \"${NODEODM_RESUME_FALLBACK_REASON:-}\""
     fi
     JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"${RESUME_JSON_FIELDS}}"
     echo "Debug: JSON payload='$JSON_PAYLOAD'"

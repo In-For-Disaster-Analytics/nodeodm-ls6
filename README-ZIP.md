@@ -41,9 +41,22 @@ nodeodm-source/
 
 ## 3. Upload and register
 
-1. Upload `nodeodm-ls6.zip` to a location reachable by the Tapis execution system (for example a GitHub release or object store).
-2. Update the `containerImage` URL in `app.json` if it changed.
-3. Re-register the app with Tapis.
+By default, `./build-zip.sh` uploads the ZIP with overwrite enabled using plain SSH/SCP:
+
+```bash
+ssh ls6 "mkdir -p /corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODM"
+scp nodeodm-ls6.zip ls6:/corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODM/nodeodm-ls6.zip
+```
+
+The app definition still points at the Tapis storage URI for runtime staging:
+
+```bash
+tapis://ptdatax.project.PTDATAX-225/NodeODM/nodeodm-ls6.zip
+```
+
+You can override the upload target with `REMOTE_SSH_TARGET` and `REMOTE_UPLOAD_DIR`, or run `SKIP_UPLOAD=1 ./build-zip.sh` to build locally without uploading. `SKIP_TAPIS_UPLOAD=1` is still accepted as a compatibility alias.
+
+After upload, re-register or update the app with Tapis.
 
 ## 4. How the runtime works
 
