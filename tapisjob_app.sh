@@ -1156,7 +1156,11 @@ if [ "$MAX_PARALLEL_TASKS" -lt 1 ]; then
     MAX_PARALLEL_TASKS=1
 fi
 
-NODEODM_CLEANUP_MINUTES=0
+NODEODM_CLEANUP_MINUTES="${NODEODM_CLEANUP_MINUTES:-0}"
+if ! [[ "$NODEODM_CLEANUP_MINUTES" =~ ^-?[0-9]+$ ]]; then
+    echo "Invalid NODEODM_CLEANUP_MINUTES=$NODEODM_CLEANUP_MINUTES; defaulting to 0"
+    NODEODM_CLEANUP_MINUTES=0
+fi
 echo "Creating NodeODM configuration (maxConcurrency=$MAX_CONCURRENCY, maxParallelTasks=$MAX_PARALLEL_TASKS, parallelQueueProcessing=$PARALLEL_QUEUE, cleanupTasksAfter=${NODEODM_CLEANUP_MINUTES})..."
 cat > $WORK_DIR/nodeodm-config.json << EOF
 {
