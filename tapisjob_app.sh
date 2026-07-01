@@ -10,6 +10,13 @@ if [[ "${DEBUG:-0}" == "1" ]]; then
     set +e
 fi
 
+# Group-writable default: NodeODM writes results back into the shared corral WebODM
+# media tree, which is setgid + owned by the allocation group. umask 002 keeps those
+# files g+rw so WebODM (and other group members) can manage them; the setgid dirs on
+# the media tree supply the correct group.
+# See docs/design/2026-07-01-corral-ownership-group-inheritance.md (odm-suite)
+umask 002
+
 if [[ -n "$1" ]]; then
     MAX_CONCURRENCY=$1
     MAX_CONCURRENCY_USER_SET=1
