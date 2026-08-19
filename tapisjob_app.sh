@@ -3,7 +3,7 @@
 # NodeODM processing script for Tapis
 # Based on the working nodeodm.sh configuration - using ZIP runtime to access TACC modules
 # ZIP runtime means we run directly on compute node and can use module load tacc-apptainer
-
+# NODEODM_MONITOR_TIMEOUT_SEC=300
 if [[ "${DEBUG:-0}" == "1" ]]; then
     set -x
     # Keep going during debug even if a command fails (don't auto-shutdown)
@@ -59,7 +59,11 @@ NODEODM_DEBUG_SHELL=${NODEODM_DEBUG_SHELL:-0}
 NODEODM_DEBUG_SLEEP=${NODEODM_DEBUG_SLEEP:-43200}
 ORIGINAL_ARGS=("$@")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-NODEODM_CHECKPOINT_ROOT=${NODEODM_CHECKPOINT_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media/.nodeodm-checkpoints}
+NODEODM_CHECKPOINT_ROOT=${NODEODM_CHECKPOINT_ROOT:-/corral/utexas/BCS26030/webodm/media/.nodeodm-checkpoints}
+# Corral tree containing WebODM's shared media (import_path sources + .nodeodm-checkpoints).
+# Apptainer does not auto-bind this, so without an explicit --bind the container cannot see it
+# at all, even though the host process (and the allowlist checks in config.js) can.
+NODEODM_CORRAL_MEDIA_ROOT=${NODEODM_CORRAL_MEDIA_ROOT:-/corral/utexas/BCS26030/webodm/media}
 NODEODM_CHECKPOINT_INTERVAL_SECONDS=${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}
 NODEODM_CHECKPOINT_RETENTION_SECONDS=${NODEODM_CHECKPOINT_RETENTION_SECONDS:-604800}
 NODEODM_CHECKPOINT_COPY_DATA=${NODEODM_CHECKPOINT_COPY_DATA:-0}
@@ -214,11 +218,11 @@ fi
 # Mirror output to stdout and log, and wrap curl for verbose tracing
 exec > >(tee -a "$LOG_FILE") 2>&1
 curl() {
-    echo ""
-    echo ">>> curl $*"
+    printf '\n>>> curl' >&2
+    printf ' %q' "$@" >&2
+    printf '\n' >&2
     command curl -v "$@"
 }
-
 # Start log file early so we always have something to tail
 echo "Starting NodeODM job (role=${NODEODM_ROLE:-admin} child=${NODEODM_CHILD_INDEX:-primary})" > "$LOG_FILE" || true
 
@@ -271,6 +275,52 @@ NODEODM_COMPLETE_ENABLE=${NODEODM_COMPLETE_ENABLE:-1}
 NODEODM_COMPLETE_PORT=${NODEODM_COMPLETE_PORT:-3010}
 COMPLETE_FLAG="$WORK_DIR/nodeodm_complete.flag"
 mkdir -p "$WORK_DIR"
+
+# --- Cross-node activity coordination (multi-node fan-out only) ---
+# LS6 allocates all nodes for a job up front, so an idle node cannot free capacity by
+# exiting early anyway - it should stay up as long as ANY sibling node is still processing
+# a task, since ClusterODM may still route it more work later. Coordination happens via a
+# heartbeat file per node in the job's shared working directory (visible to all nodes on
+# the same Lustre filesystem).
+NODE_ACTIVITY_DIR=""
+NODE_ACTIVITY_FILE=""
+if [[ -n "$NODEODM_CHILD_INDEX" && -n "${_tapisJobWorkingDir:-}" ]]; then
+    NODE_ACTIVITY_DIR="${_tapisJobWorkingDir}/.node_activity"
+    NODE_ACTIVITY_FILE="${NODE_ACTIVITY_DIR}/${NODEODM_CHILD_INDEX}"
+    mkdir -p "$NODE_ACTIVITY_DIR" 2>/dev/null || true
+fi
+
+# Touch this node's heartbeat file. Call whenever this node has a task queued/running.
+mark_node_active() {
+    [[ -n "$NODE_ACTIVITY_FILE" ]] || return 0
+    mkdir -p "$NODE_ACTIVITY_DIR" 2>/dev/null || true
+    touch "$NODE_ACTIVITY_FILE" 2>/dev/null || true
+}
+
+# Remove this node's heartbeat file. Call once this node has no active task.
+mark_node_idle() {
+    [[ -n "$NODE_ACTIVITY_FILE" ]] || return 0
+    rm -f "$NODE_ACTIVITY_FILE" 2>/dev/null || true
+}
+
+# True if some other node's heartbeat was refreshed recently. A node that crashes without
+# running its exit trap leaves a stale file behind; treat anything older than a few poll
+# intervals as dead rather than blocking the rest of the cluster on it forever.
+any_sibling_active() {
+    [[ -n "$NODE_ACTIVITY_DIR" ]] || return 1
+    local stale_after=90
+    local now f mtime
+    now=$(date +%s)
+    for f in "$NODE_ACTIVITY_DIR"/*; do
+        [[ -e "$f" ]] || continue
+        [[ "$f" == "$NODE_ACTIVITY_FILE" ]] && continue
+        mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+        if [[ $((now - mtime)) -le "$stale_after" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Ensure we have a local SIF image for NodeODM to avoid repeated remote pulls
 NODEODM_SIF="$WORK_DIR/nodeodm.sif"
@@ -389,10 +439,18 @@ function add_resume_bind() {
 add_resume_bind "$NODEODM_RESUME_RUNTIME_PATH"
 add_resume_bind "$NODEODM_RESUME_DATA_PATH"
 
-if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND} ${RESUME_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
+CORRAL_BIND=""
+if [[ "${NODEODM_DISABLE_IMPORT_PATH:-0}" != "1" && -n "${NODEODM_CORRAL_MEDIA_ROOT:-}" && -d "$NODEODM_CORRAL_MEDIA_ROOT" ]]; then
+    CORRAL_BIND="--bind ${NODEODM_CORRAL_MEDIA_ROOT}:${NODEODM_CORRAL_MEDIA_ROOT}:rw"
+    echo "Binding corral webodm media root into container: ${NODEODM_CORRAL_MEDIA_ROOT}"
 else
-    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND} ${RESUME_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
+    echo "Corral webodm media root not bound (missing, or NODEODM_DISABLE_IMPORT_PATH=1): ${NODEODM_CORRAL_MEDIA_ROOT:-unset}"
+fi
+
+if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR:/var/www:rw ${SCRATCH_BIND} ${RESUME_BIND} ${CORRAL_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
+else
+    NODEODM_BIND_ARGS="--bind $NODEODM_RUNTIME_DIR/data:/var/www/data:rw --bind $NODEODM_RUNTIME_DIR/tmp:/var/www/tmp:rw --bind $NODEODM_RUNTIME_DIR/logs:/var/www/logs:rw ${SCRATCH_BIND} ${RESUME_BIND} ${CORRAL_BIND} ${ODM_CODE_STORAGE_BIND_ARGS} ${ODM_REMOTE_PATCH_BIND_ARGS}"
 fi
 
 echo "Runtime directory prepared:"
@@ -620,10 +678,10 @@ function stream_task_output() {
 
     if command -v python3 >/dev/null 2>&1; then
         python_result=$(
-            RAW_OUTPUT="$raw_output" python3 <<'PY'
-import json, os, sys
+            python3 <<'PY'
+import json, sys
 
-data = os.environ.get("RAW_OUTPUT", "")
+data = sys.stdin.read()
 if not data.strip():
     print("__COUNT__=0")
     sys.exit(0)
@@ -655,6 +713,7 @@ print(f"__COUNT__={len(lines)}")
 for line in lines:
     print(line)
 PY
+            <<< "$raw_output"
         )
         if [ -n "$python_result" ]; then
             new_lines=$(echo "$python_result" | awk -F= '/^__COUNT__/ {print $2; exit}')
@@ -700,43 +759,69 @@ PY
 function parse_task_status() {
     local payload="$1"
     if command -v python3 >/dev/null 2>&1; then
-        STATUS_PAYLOAD="$payload" python3 <<'PY'
+        python3 <<'PY'
 import json
-import os
+import sys
 
-payload = os.environ.get("STATUS_PAYLOAD", "")
+payload = sys.stdin.read()
 code_map = {10: "QUEUED", 20: "RUNNING", 30: "FAILED", 40: "COMPLETED", 50: "CANCELED"}
+status = None
+resolved = ""
 try:
     data = json.loads(payload)
     status = data.get("status")
+    # NodeODM's actual /task/<uuid>/info response has "status" as a bare int
+    # code (e.g. 20), not the {"code": 20} dict this used to assume - that
+    # mismatch left resolved="" forever, so the caller's QUEUED/RUNNING check
+    # never matched and the job-monitor loop treated an actively-running task
+    # as if none had ever been submitted.
     if isinstance(status, dict):
-        print(code_map.get(int(status.get("code")), ""))
+        resolved = code_map.get(int(status.get("code")), "")
+    elif isinstance(status, int):
+        resolved = code_map.get(status, "")
     elif isinstance(status, str):
-        print(status)
-    else:
-        print("")
-except Exception:
-    print("")
+        resolved = status
+except Exception as exc:
+    print(f"[parse_task_status] failed to parse payload: {exc}", file=sys.stderr)
+
+print(f"[parse_task_status] raw status={status!r} resolved={resolved!r}", file=sys.stderr)
+print(resolved)
 PY
+        <<< "$payload"
     else
-        echo "$payload" | grep -o '"status":"[^"]*"' | cut -d'"' -f4
+        local raw
+        raw=$(echo "$payload" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+        if [ -z "$raw" ]; then
+            local code
+            code=$(echo "$payload" | grep -o '"status":[0-9]*' | cut -d':' -f2)
+            case "$code" in
+                10) raw="QUEUED" ;;
+                20) raw="RUNNING" ;;
+                30) raw="FAILED" ;;
+                40) raw="COMPLETED" ;;
+                50) raw="CANCELED" ;;
+            esac
+        fi
+        echo "[parse_task_status] raw status=$(echo "$payload" | grep -o '"status":[^,}]*') resolved='$raw'" >&2
+        echo "$raw"
     fi
 }
 
 function parse_task_progress() {
     local payload="$1"
     if command -v python3 >/dev/null 2>&1; then
-        STATUS_PAYLOAD="$payload" python3 <<'PY'
+        python3 <<'PY'
 import json
-import os
+import sys
 
 try:
-    data = json.loads(os.environ.get("STATUS_PAYLOAD", ""))
+    data = json.loads(sys.stdin.read())
     progress = data.get("progress", 0)
     print(int(float(progress)))
 except Exception:
     print("0")
 PY
+        <<< "$payload"
     else
         echo "$payload" | grep -o '"progress":[0-9]*' | cut -d':' -f2
     fi
@@ -1277,6 +1362,8 @@ cleanup() {
     local exit_code=$?
     echo "Cleaning up processes (exit code: $exit_code)..."
 
+    mark_node_idle
+
     checkpoint_sync "exit" "${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}" || true
 
     # Always notify PTDataX that NodeODM is shutting down (non-blocking)
@@ -1395,7 +1482,7 @@ cat $WORK_DIR/nodeodm-config.json
 if [[ -n "${_tapisJobWorkingDir:-}" ]]; then
     SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-${_tapisJobWorkingDir}}"
 else
-    SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-263/webodm/media}"
+    SHARED_IMPORT_ROOT="${NODEODM_IMPORT_PATH_ROOT:-/corral/utexas/BCS26030/webodm/media}"
 fi
 if [[ "${NODEODM_DISABLE_IMPORT_PATH:-0}" == "1" ]]; then
     unset NODEODM_IMPORT_PATH_ROOTS
@@ -1895,11 +1982,12 @@ send_nodeodm_status_to_ptdatax "ready" "NodeODM instance ready and registered wi
 echo "NodeODM is ready and waiting for tasks from ClusterODM..."
 echo "No automatic task processing - ClusterODM will send tasks when ready"
 
-# Monitor for tasks and wait
+# Monitor for tasks and wait. A node keeps looking for work across multiple tasks - it only
+# gives up once it has been idle past MAX_MONITORING_TIME AND no sibling node is currently
+# active (see mark_node_active/any_sibling_active above). Siblings may still hand this node
+# more work later, so an idle node must not shut itself (and the NodeODM instance backing it)
+# down while the rest of the cluster is busy.
 echo "Monitoring for incoming tasks..."
-TASK_UUID=""
-TASK_OUTPUT_LINE=0
-MONITORING_TIMEOUT=0
 
 # Convert SLURM_TIMELIMIT to seconds (handles HH:MM:SS or minutes)
 # Allow override via NODEODM_MONITOR_TIMEOUT_SEC (seconds) or NODEODM_MONITOR_TIMEOUT_HOURS.
@@ -1925,140 +2013,178 @@ if ! [[ "$MAX_MONITORING_TIME" =~ ^[0-9]+$ ]] || [ "$MAX_MONITORING_TIME" -le 0 
     MAX_MONITORING_TIME=$DEFAULT_MONITOR_LIMIT
 fi
 
+NODE_EXIT_STATUS=0
 while true; do
-    # Check if any tasks have been submitted
-    echo "🔧 CURL TASK CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/list?token=${TAP_TOKEN:0:10}...'"
-    TASK_LIST_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/list?token=$TAP_TOKEN")
+    TASK_UUID=""
+    TASK_OUTPUT_LINE=0
+    MONITORING_TIMEOUT=0
 
-    if echo "$TASK_LIST_RESPONSE" | grep -q '"uuid"'; then
-        # Extract the first task UUID
-        TASK_UUID=$(echo "$TASK_LIST_RESPONSE" | grep -o '"uuid":"[^"]*"' | head -1 | cut -d'"' -f4)
-        echo "Found task: $TASK_UUID"
-        TASK_OUTPUT_LINE=0
+    # ---- Wait for a task to be assigned to this node ----
+    while true; do
+        echo "🔧 CURL TASK CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/list?token=${TAP_TOKEN:0:10}...'"
+        TASK_LIST_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/list?token=$TAP_TOKEN")
 
-        # Get task info to check status
-        echo "🔧 CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
-        STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
-        STATUS=$(parse_task_status "$STATUS_RESPONSE")
+        if echo "$TASK_LIST_RESPONSE" | grep -q '"uuid"'; then
+            # A node can pick up more than one task over its lifetime now, and a task it
+            # already finished can still linger in this list, so scan every uuid for one
+            # that's actually queued/running instead of assuming the first entry is it.
+            for CANDIDATE_UUID in $(echo "$TASK_LIST_RESPONSE" | grep -o '"uuid":"[^"]*"' | cut -d'"' -f4); do
+                echo "🔧 CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=${TAP_TOKEN:0:10}...'"
+                CANDIDATE_STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=$TAP_TOKEN")
+                CANDIDATE_STATUS=$(parse_task_status "$CANDIDATE_STATUS_RESPONSE")
+                if [ "$CANDIDATE_STATUS" = "QUEUED" ] || [ "$CANDIDATE_STATUS" = "RUNNING" ]; then
+                    TASK_UUID="$CANDIDATE_UUID"
+                    STATUS="$CANDIDATE_STATUS"
+                    STATUS_RESPONSE="$CANDIDATE_STATUS_RESPONSE"
+                    break
+                fi
+            done
+        fi
 
-        if [ "$STATUS" = "QUEUED" ] || [ "$STATUS" = "RUNNING" ]; then
+        if [ -n "$TASK_UUID" ]; then
+            echo "Found task: $TASK_UUID"
+            TASK_OUTPUT_LINE=0
             echo "Task $TASK_UUID is processing, monitoring progress..."
             send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID"
             checkpoint_sync "task-start" "$TASK_UUID"
+            mark_node_active
             break
         fi
-    fi
 
-    # Check timeout
-    MONITORING_TIMEOUT=$((MONITORING_TIMEOUT + 30))
-    if [ "$MONITORING_TIMEOUT" -gt "$MAX_MONITORING_TIME" ]; then
-        echo "Timeout waiting for tasks from ClusterODM"
-        send_nodeodm_status_to_ptdatax "timeout" "NodeODM timed out waiting for tasks"
-        exit 0
-    fi
+        # Check timeout
+        MONITORING_TIMEOUT=$((MONITORING_TIMEOUT + 30))
+        if [ "$MONITORING_TIMEOUT" -gt "$MAX_MONITORING_TIME" ]; then
+            if any_sibling_active; then
+                echo "Local idle timeout reached, but a sibling node is still active - staying up in case more tasks are dispatched here"
+                MONITORING_TIMEOUT=0
+            else
+                echo "Timeout waiting for tasks from ClusterODM"
+                send_nodeodm_status_to_ptdatax "timeout" "NodeODM timed out waiting for tasks"
+                mark_node_idle
+                break 2
+            fi
+        fi
 
-    echo "Waiting for task from ClusterODM... (${MONITORING_TIMEOUT}s elapsed)"
-    sleep 30
-done
+        echo "Waiting for task from ClusterODM... (${MONITORING_TIMEOUT}s elapsed)"
+        sleep 30
+    done
 
-# Monitor task progress
-echo "Monitoring task progress for $TASK_UUID..."
-while true; do
-    echo "🔧 CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
-    STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
-    STATUS=$(parse_task_status "$STATUS_RESPONSE")
-    PROGRESS=$(parse_task_progress "$STATUS_RESPONSE")
+    # ---- Monitor task progress ----
+    echo "Monitoring task progress for $TASK_UUID..."
+    while true; do
+        echo "🔧 CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
+        STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
+        STATUS=$(parse_task_status "$STATUS_RESPONSE")
+        PROGRESS=$(parse_task_progress "$STATUS_RESPONSE")
 
-    echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
+        echo "Task status: $STATUS, Progress: ${PROGRESS:-0}%"
+        stream_task_output
+        maybe_checkpoint_sync
+        mark_node_active
+
+        case $STATUS in
+            "COMPLETED")
+                echo "✓ Task completed successfully"
+                send_nodeodm_status_to_ptdatax "complete" "NodeODM task $TASK_UUID completed successfully"
+                checkpoint_sync "completed" "$TASK_UUID"
+                break
+                ;;
+            "FAILED")
+                echo "✗ Task failed"
+                echo "Error details:"
+                echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
+                send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
+                stream_task_output
+                checkpoint_sync "failed" "$TASK_UUID"
+                NODE_EXIT_STATUS=1
+                break
+                ;;
+            "CANCELED")
+                echo "✗ Task was canceled"
+                send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
+                stream_task_output
+                checkpoint_sync "canceled" "$TASK_UUID"
+                NODE_EXIT_STATUS=1
+                break
+                ;;
+            *)
+                sleep 30
+                ;;
+        esac
+    done
+
     stream_task_output
-    maybe_checkpoint_sync
 
-    case $STATUS in
-        "COMPLETED")
-            echo "✓ Task completed successfully"
-            send_nodeodm_status_to_ptdatax "complete" "NodeODM task $TASK_UUID completed successfully"
-            checkpoint_sync "completed" "$TASK_UUID"
-            break
-            ;;
-        "FAILED")
-            echo "✗ Task failed"
-            echo "Error details:"
-            echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
-            send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
-            stream_task_output
-            checkpoint_sync "failed" "$TASK_UUID"
-            exit 1
-            ;;
-        "CANCELED")
-            echo "✗ Task was canceled"
-            send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
-            stream_task_output
-            checkpoint_sync "canceled" "$TASK_UUID"
-            exit 1
-            ;;
-        *)
-            sleep 30
-            ;;
-    esac
+    if [ "$STATUS" = "COMPLETED" ]; then
+        # Namespace downloads/report per task so a second task handled by this node
+        # doesn't overwrite the first one's results.
+        TASK_RESULT_DIR="$OUTPUT_DIR/$TASK_UUID"
+        mkdir -p "$TASK_RESULT_DIR"
+
+        echo "Downloading results..."
+        echo "🔧 CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/all.zip 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=${TAP_TOKEN:0:10}...'"
+        curl -s -o "$TASK_RESULT_DIR/all.zip" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=$TAP_TOKEN"
+        echo "🔧 CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/orthophoto.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=${TAP_TOKEN:0:10}...'"
+        curl -s -o "$TASK_RESULT_DIR/orthophoto.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=$TAP_TOKEN"
+        echo "🔧 CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dsm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=${TAP_TOKEN:0:10}...'"
+        curl -s -o "$TASK_RESULT_DIR/dsm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$TAP_TOKEN"
+        echo "🔧 CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${TAP_TOKEN:0:10}...'"
+        curl -s -o "$TASK_RESULT_DIR/dtm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$TAP_TOKEN"
+
+        # Generate processing report
+        echo "NodeODM Processing Report" > "$TASK_RESULT_DIR/processing_report.txt"
+        echo "========================" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Job Owner: ${_tapisJobOwner}" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Job UUID: ${_tapisJobUUID}" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Task UUID: $TASK_UUID" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Processing Time: $(date)" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Input Directory: $INPUT_DIR" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Output Directory: $TASK_RESULT_DIR" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Images Processed: $IMAGE_COUNT" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Max Concurrency: $MAX_CONCURRENCY" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Port: $NODEODM_PORT" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "External URL: ${EXTERNAL_URL}" >> "$TASK_RESULT_DIR/processing_report.txt"
+        if [ -n "$LOGIN_PORT" ]; then
+            echo "TAP Login Port: $LOGIN_PORT" >> "$TASK_RESULT_DIR/processing_report.txt"
+        fi
+        echo "" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "NodeODM Info:" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "$NODEODM_INFO" >> "$TASK_RESULT_DIR/processing_report.txt"
+
+        # List output files
+        echo "" >> "$TASK_RESULT_DIR/processing_report.txt"
+        echo "Output Files:" >> "$TASK_RESULT_DIR/processing_report.txt"
+        ls -la "$TASK_RESULT_DIR" >> "$TASK_RESULT_DIR/processing_report.txt"
+
+        echo "NodeODM processing completed successfully!"
+        echo "Results saved to: $TASK_RESULT_DIR"
+
+        echo ""
+        echo "========================================="
+        echo "NodeODM Processing Complete"
+        echo "========================================="
+        echo "Task UUID: $TASK_UUID"
+        echo "Images processed: $IMAGE_COUNT"
+        if [ -n "$SLURM_JOB_ID" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ]; then
+            echo "External access: $EXTERNAL_URL"
+            echo "Info endpoint: ${EXTERNAL_URL}info"
+        else
+            echo "SSH tunnel required for external access:"
+            echo "ssh -N -L $NODEODM_PORT:$(hostname):$NODEODM_PORT $USER@ls6.tacc.utexas.edu"
+        fi
+        echo "Local access: http://localhost:$NODEODM_PORT?token=$TAP_TOKEN"
+        echo "Output directory: $TASK_RESULT_DIR"
+        echo "========================================="
+    fi
+
+    mark_node_idle
+    echo "Node ${NODEODM_CHILD_INDEX:-primary} is idle again; checking for more work..."
+    # loop back to wait for another task
 done
 
-stream_task_output
-
-# Download results
-echo "Downloading results..."
-echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/all.zip 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=${TAP_TOKEN:0:10}...'"
-curl -s -o $OUTPUT_DIR/all.zip "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=$TAP_TOKEN"
-echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/orthophoto.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=${TAP_TOKEN:0:10}...'"
-curl -s -o $OUTPUT_DIR/orthophoto.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=$TAP_TOKEN"
-echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dsm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=${TAP_TOKEN:0:10}...'"
-curl -s -o $OUTPUT_DIR/dsm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$TAP_TOKEN"
-echo "🔧 CURL DOWNLOAD: curl -s -o $OUTPUT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${TAP_TOKEN:0:10}...'"
-curl -s -o $OUTPUT_DIR/dtm.tif "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$TAP_TOKEN"
-
-# Wait for ClusterODM to signal that results have been transferred to WebODM
+echo "Node ${NODEODM_CHILD_INDEX:-primary} found no more work and no active siblings; shutting down."
+# Wait for ClusterODM to signal that results have been transferred to WebODM. This is a
+# whole-node (not per-task) signal, so it only runs once, right before this node exits for good.
 wait_for_completion_signal
 
-# Generate processing report
-echo "NodeODM Processing Report" > $OUTPUT_DIR/processing_report.txt
-echo "========================" >> $OUTPUT_DIR/processing_report.txt
-echo "Job Owner: ${_tapisJobOwner}" >> $OUTPUT_DIR/processing_report.txt
-echo "Job UUID: ${_tapisJobUUID}" >> $OUTPUT_DIR/processing_report.txt
-echo "Task UUID: $TASK_UUID" >> $OUTPUT_DIR/processing_report.txt
-echo "Processing Time: $(date)" >> $OUTPUT_DIR/processing_report.txt
-echo "Input Directory: $INPUT_DIR" >> $OUTPUT_DIR/processing_report.txt
-echo "Output Directory: $OUTPUT_DIR" >> $OUTPUT_DIR/processing_report.txt
-echo "Images Processed: $IMAGE_COUNT" >> $OUTPUT_DIR/processing_report.txt
-echo "Max Concurrency: $MAX_CONCURRENCY" >> $OUTPUT_DIR/processing_report.txt
-echo "Port: $NODEODM_PORT" >> $OUTPUT_DIR/processing_report.txt
-echo "External URL: ${EXTERNAL_URL}" >> $OUTPUT_DIR/processing_report.txt
-if [ -n "$LOGIN_PORT" ]; then
-    echo "TAP Login Port: $LOGIN_PORT" >> $OUTPUT_DIR/processing_report.txt
-fi
-echo "" >> $OUTPUT_DIR/processing_report.txt
-echo "NodeODM Info:" >> $OUTPUT_DIR/processing_report.txt
-echo "$NODEODM_INFO" >> $OUTPUT_DIR/processing_report.txt
-
-# List output files
-echo "" >> $OUTPUT_DIR/processing_report.txt
-echo "Output Files:" >> $OUTPUT_DIR/processing_report.txt
-ls -la $OUTPUT_DIR >> $OUTPUT_DIR/processing_report.txt
-
-echo "NodeODM processing completed successfully!"
-echo "Results saved to: $OUTPUT_DIR"
-
-echo ""
-echo "========================================="
-echo "NodeODM Processing Complete"
-echo "========================================="
-echo "Task UUID: $TASK_UUID"
-echo "Images processed: $IMAGE_COUNT"
-if [ -n "$SLURM_JOB_ID" ] && [ "$EXTERNAL_URL" != "N/A - use SSH tunnel" ]; then
-    echo "External access: $EXTERNAL_URL"
-    echo "Info endpoint: ${EXTERNAL_URL}info"
-else
-    echo "SSH tunnel required for external access:"
-    echo "ssh -N -L $NODEODM_PORT:$(hostname):$NODEODM_PORT $USER@ls6.tacc.utexas.edu"
-fi
-echo "Local access: http://localhost:$NODEODM_PORT?token=$TAP_TOKEN"
-echo "Output directory: $OUTPUT_DIR"
-echo "========================================="
+exit $NODE_EXIT_STATUS
