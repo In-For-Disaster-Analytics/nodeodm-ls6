@@ -24,15 +24,28 @@ echo "Building NodeODM LS6 ZIP package (full)..."
 # Clean up any existing files
 rm -f "$PACKAGE_NAME"
 
-# Create ZIP package with all necessary files including webhook scripts
+# Create ZIP package with all necessary files including lib/ modules
 echo "Creating ZIP package..."
-zip -r "$PACKAGE_NAME" tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh nodeodm-source odm-patches \
+zip -r "$PACKAGE_NAME" tapisjob_app.sh app.json README-ZIP.md register-node.sh deregister-node.sh nodeodm-source odm-patches lib/ \
   -x "nodeodm-source/.git/*" \
   -x "nodeodm-source/node_modules/*" \
-  -x "odm-patches/__pycache__/*"
+  -x "odm-patches/__pycache__/*" \
+  -x "lib/__pycache__/*"
 
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh "$PACKAGE_NAME" | awk '{print $5}')"
+
+# Post-build verification: ensure all 6 module files present
+echo ""
+echo "Verifying module files in ZIP..."
+EXPECTED_MODULES=6
+FOUND_MODULES=$(unzip -l "$PACKAGE_NAME" | grep -E 'lib/(common|tap_auth|nodeodm_launch|task_monitor|checkpoint|clusterodm)\.sh$' | wc -l)
+if [[ "$FOUND_MODULES" -ne "$EXPECTED_MODULES" ]]; then
+  echo "ERROR: ZIP missing module files (found $FOUND_MODULES/$EXPECTED_MODULES)"
+  unzip -l "$PACKAGE_NAME" | grep "lib/"
+  exit 1
+fi
+echo "All $EXPECTED_MODULES module files verified in ZIP."
 
 if [ "$SKIP_UPLOAD" = "1" ]; then
   echo ""
@@ -59,13 +72,14 @@ unzip -l "$PACKAGE_NAME"
 
 echo ""
 echo "This ZIP contains:"
-echo "- tapisjob_app.sh: Main execution script that uses 'module load tacc-apptainer'"
+echo "- tapisjob_app.sh: Main execution script that sources lib/ modules"
 echo "- app.json: Tapis app definition"
 echo "- README-ZIP.md: Documentation"
 echo "- register-node.sh: Webhook registration script for ClusterODM"
 echo "- deregister-node.sh: Webhook de-registration script for ClusterODM"
 echo "- nodeodm-source/: NodeODM source code synced into the runtime"
 echo "- odm-patches/: ODM runtime patches bound into /code"
+echo "- lib/: Modular shell libraries (common, tap_auth, nodeodm_launch, clusterodm, task_monitor, checkpoint)"
 
 echo ""
 echo "How it works:"
