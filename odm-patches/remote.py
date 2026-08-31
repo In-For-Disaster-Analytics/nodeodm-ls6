@@ -1657,10 +1657,7 @@ class ToolchainTask(Task):
                                                 "opensfm/reconstruction.json",
                                                 "opensfm/tracks.csv"] + present_optional_dirs + seed_submodel_files,
                                 seed_touch_files=missing_optional_markers + seed_submodel_touch_files,
-                                outputs=["odm_orthophoto/cutline.gpkg",
-                                        "odm_orthophoto/odm_orthophoto_cut.tif",
-                                        "odm_orthophoto/odm_orthophoto_feathered.tif",
-                                        "odm_dem",
+                                outputs=["odm_dem",
                                         "odm_report",
                                         "odm_georeferencing"],
                                 name_override=f"{submodel_name}_toolchain")
