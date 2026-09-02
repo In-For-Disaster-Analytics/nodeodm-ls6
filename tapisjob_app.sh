@@ -230,9 +230,11 @@ mkdir -p "$WORK_DIR"
 # the same Lustre filesystem).
 NODE_ACTIVITY_DIR=""
 NODE_ACTIVITY_FILE=""
+SHUTDOWN_FLAG=""
 if [[ -n "$NODEODM_CHILD_INDEX" && -n "${_tapisJobWorkingDir:-}" ]]; then
     NODE_ACTIVITY_DIR="${_tapisJobWorkingDir}/.node_activity"
     NODE_ACTIVITY_FILE="${NODE_ACTIVITY_DIR}/${NODEODM_CHILD_INDEX}"
+    SHUTDOWN_FLAG="${NODE_ACTIVITY_DIR}/shutdown.flag"
     mkdir -p "$NODE_ACTIVITY_DIR" 2>/dev/null || true
 fi
 
@@ -275,7 +277,23 @@ mkdir -p "$NODEODM_RUNTIME_DIR"
 
 if [ "$NODEODM_USE_IMAGE_SOURCE" -eq 0 ]; then
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a --delete "$NODEODM_SOURCE_DIR"/ "$NODEODM_RUNTIME_DIR"/
+        # Retry rsync up to 3 times with backoff — Lustre can return EREMOTEIO
+        # when multiple nodes rsync simultaneously
+        rsync_ok=0
+        for rsync_attempt in 1 2 3; do
+            if rsync -a --delete "$NODEODM_SOURCE_DIR"/ "$NODEODM_RUNTIME_DIR"/; then
+                rsync_ok=1
+                break
+            fi
+            echo "rsync attempt $rsync_attempt failed (Lustre contention?), retrying in ${rsync_attempt}0s..."
+            sleep $((rsync_attempt * 10))
+        done
+        if [[ "$rsync_ok" -ne 1 ]]; then
+            echo "rsync failed after 3 attempts; falling back to cp -a"
+            rm -rf "$NODEODM_RUNTIME_DIR"
+            mkdir -p "$NODEODM_RUNTIME_DIR"
+            cp -a "$NODEODM_SOURCE_DIR"/. "$NODEODM_RUNTIME_DIR"/
+        fi
     else
         cp -a "$NODEODM_SOURCE_DIR"/. "$NODEODM_RUNTIME_DIR"/
     fi
@@ -418,12 +436,13 @@ fi
 echo "[TAP] Role=$NODEODM_ROLE PORT=$NODEODM_PORT LOGIN_PORT=${LOGIN_PORT:-n/a} TOKEN_PREFIX=${TAP_TOKEN:0:8}"
 
 # Export for downstream tools (e.g., remote.py token auto-append), per-port and default.
-export ODM_NODE_TOKEN="$TAP_TOKEN"
+# Use user ID as the node auth token (stable, never expires) instead of TAP_TOKEN
+export ODM_NODE_TOKEN="$_tapisJobOwner"
 if [[ -n "$NODEODM_PORT" ]]; then
-    export ODM_NODE_TOKEN_${NODEODM_PORT}="$TAP_TOKEN"
-    echo "[TAP] Exported ODM_NODE_TOKEN and ODM_NODE_TOKEN_${NODEODM_PORT} for downstream consumers"
+    export ODM_NODE_TOKEN_${NODEODM_PORT}="$_tapisJobOwner"
+    echo "[TAP] Exported ODM_NODE_TOKEN and ODM_NODE_TOKEN_${NODEODM_PORT} for downstream consumers (user ID: $_tapisJobOwner)"
 else
-    echo "[TAP] Exported ODM_NODE_TOKEN for downstream consumers"
+    echo "[TAP] Exported ODM_NODE_TOKEN for downstream consumers (user ID: $_tapisJobOwner)"
 fi
 
 # Start completion server after TAP token is available
@@ -432,7 +451,7 @@ start_completion_server
 # =============================================================================
 # NODEODM CONFIGURATION & LAUNCH
 # =============================================================================
-# Create NodeODM configuration file with TAP_TOKEN
+# Create NodeODM configuration file with user ID as auth token
 create_nodeodm_config
 
 # Prepare runtime directory (import_path config, env exports, preflight checks)

@@ -17,7 +17,7 @@ stream_task_output() {
 
     local start_line=${TASK_OUTPUT_LINE:-0}
     local raw_output
-    raw_output=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/output?token=$TAP_TOKEN&line=$start_line" 2>/dev/null || echo "[]")
+    raw_output=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/output?token=$_tapisJobOwner&line=$start_line" 2>/dev/null || echo "[]")
 
     local python_result=""
     local parsed_output="$raw_output"
@@ -179,16 +179,16 @@ PY
 # =============================================================================
 wait_for_task() {
     while true; do
-        echo "CURL TASK CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/list?token=${TAP_TOKEN:0:10}...'"
-        TASK_LIST_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/list?token=$TAP_TOKEN")
+        echo "CURL TASK CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/list?token=${_tapisJobOwner}'"
+        TASK_LIST_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/list?token=$_tapisJobOwner")
 
         if echo "$TASK_LIST_RESPONSE" | grep -q '"uuid"'; then
             # A node can pick up more than one task over its lifetime now, and a task it
             # already finished can still linger in this list, so scan every uuid for one
             # that's actually queued/running instead of assuming the first entry is it.
             for CANDIDATE_UUID in $(echo "$TASK_LIST_RESPONSE" | grep -o '"uuid":"[^"]*"' | cut -d'"' -f4); do
-                echo "CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=${TAP_TOKEN:0:10}...'"
-                CANDIDATE_STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=$TAP_TOKEN")
+                echo "CURL TASK STATUS: curl -s 'http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=${_tapisJobOwner}'"
+                CANDIDATE_STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$CANDIDATE_UUID/info?token=$_tapisJobOwner")
                 CANDIDATE_STATUS=$(parse_task_status "$CANDIDATE_STATUS_RESPONSE")
                 if [ "$CANDIDATE_STATUS" = "QUEUED" ] || [ "$CANDIDATE_STATUS" = "RUNNING" ]; then
                     TASK_UUID="$CANDIDATE_UUID"
@@ -216,9 +216,41 @@ wait_for_task() {
                 echo "Local idle timeout reached, but a sibling node is still active - staying up in case more tasks are dispatched here"
                 MONITORING_TIMEOUT=0
             else
-                echo "Timeout waiting for tasks from ClusterODM"
+                echo "Timeout waiting for tasks from ClusterODM - all nodes idle"
                 send_nodeodm_status_to_ptdatax "timeout" "NodeODM timed out waiting for tasks"
-                mark_node_idle
+
+                # Coordinated shutdown: admin writes flag, workers wait for it
+                if [[ "$NODEODM_ROLE" == "admin" ]]; then
+                    echo "Admin node writing shutdown flag for coordinated shutdown..."
+                    mark_node_idle
+                    if [[ -n "$SHUTDOWN_FLAG" ]]; then
+                        echo "$(date -Iseconds) shutdown requested" > "$SHUTDOWN_FLAG"
+                        echo "Shutdown flag written to: $SHUTDOWN_FLAG"
+                    fi
+                else
+                    # Worker node: wait for admin to write shutdown flag
+                    echo "Worker node waiting for shutdown flag from admin..."
+                    mark_node_idle
+                    local wait_sec=${NODEODM_SHUTDOWN_WAIT_SEC:-300}
+                    local waited=0
+                    while [[ "$waited" -lt "$wait_sec" ]]; do
+                        if [[ -n "$SHUTDOWN_FLAG" && -f "$SHUTDOWN_FLAG" ]]; then
+                            echo "Shutdown flag received from admin node"
+                            break
+                        fi
+                        if any_sibling_active; then
+                            echo "A sibling became active again - resetting idle timer"
+                            MONITORING_TIMEOUT=0
+                            break
+                        fi
+                        sleep 10
+                        waited=$((waited + 10))
+                        echo "Waiting for shutdown flag... (${waited}s elapsed)"
+                    done
+                    if [[ "$waited" -ge "$wait_sec" ]]; then
+                        echo "Shutdown flag not received within ${wait_sec}s; proceeding with exit"
+                    fi
+                fi
                 return 1
             fi
         fi
@@ -234,8 +266,8 @@ wait_for_task() {
 # =============================================================================
 monitor_task_progress() {
     while true; do
-        echo "CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${TAP_TOKEN:0:10}...'"
-        STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$TAP_TOKEN")
+        echo "CURL PROGRESS CHECK: curl -s 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=${_tapisJobOwner}'"
+        STATUS_RESPONSE=$(curl -s "http://localhost:$NODEODM_PORT/task/$TASK_UUID/info?token=$_tapisJobOwner")
         STATUS=$(parse_task_status "$STATUS_RESPONSE")
         PROGRESS=$(parse_task_progress "$STATUS_RESPONSE")
 
@@ -329,14 +361,14 @@ monitor_tasks() {
             mkdir -p "$TASK_RESULT_DIR"
 
             echo "Downloading results..."
-            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/all.zip 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=${TAP_TOKEN:0:10}...'"
-            curl -s -o "$TASK_RESULT_DIR/all.zip" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=$TAP_TOKEN"
-            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/orthophoto.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=${TAP_TOKEN:0:10}...'"
-            curl -s -o "$TASK_RESULT_DIR/orthophoto.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=$TAP_TOKEN"
-            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dsm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=${TAP_TOKEN:0:10}...'"
-            curl -s -o "$TASK_RESULT_DIR/dsm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$TAP_TOKEN"
-            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${TAP_TOKEN:0:10}...'"
-            curl -s -o "$TASK_RESULT_DIR/dtm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$TAP_TOKEN"
+            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/all.zip 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=${_tapisJobOwner}'"
+            curl -s -o "$TASK_RESULT_DIR/all.zip" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/all.zip?token=$_tapisJobOwner"
+            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/orthophoto.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=${_tapisJobOwner}'"
+            curl -s -o "$TASK_RESULT_DIR/orthophoto.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/orthophoto.tif?token=$_tapisJobOwner"
+            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dsm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=${_tapisJobOwner}'"
+            curl -s -o "$TASK_RESULT_DIR/dsm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dsm.tif?token=$_tapisJobOwner"
+            echo "CURL DOWNLOAD: curl -s -o $TASK_RESULT_DIR/dtm.tif 'http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=${_tapisJobOwner}'"
+            curl -s -o "$TASK_RESULT_DIR/dtm.tif" "http://localhost:$NODEODM_PORT/task/$TASK_UUID/download/dtm.tif?token=$_tapisJobOwner"
 
             # Generate processing report
             echo "NodeODM Processing Report" > "$TASK_RESULT_DIR/processing_report.txt"
@@ -379,7 +411,7 @@ monitor_tasks() {
                 echo "SSH tunnel required for external access:"
                 echo "ssh -N -L $NODEODM_PORT:$(hostname):$NODEODM_PORT $USER@ls6.tacc.utexas.edu"
             fi
-            echo "Local access: http://localhost:$NODEODM_PORT?token=$TAP_TOKEN"
+            echo "Local access: http://localhost:$NODEODM_PORT?token=$_tapisJobOwner"
             echo "Output directory: $TASK_RESULT_DIR"
             echo "========================================="
         fi
@@ -389,10 +421,18 @@ monitor_tasks() {
         # loop back to wait for another task
     done
 
-    echo "Node ${NODEODM_CHILD_INDEX:-primary} found no more work and no active siblings; shutting down."
+    echo "Node ${NODEODM_CHILD_INDEX:-primary} (role=$NODEODM_ROLE) coordinated shutdown complete; exiting."
     # Wait for ClusterODM to signal that results have been transferred to WebODM. This is a
     # whole-node (not per-task) signal, so it only runs once, right before this node exits for good.
-    wait_for_completion_signal
+    # Only the admin node waits for this signal; workers exit immediately after coordinated shutdown.
+    if [[ "$NODEODM_ROLE" == "admin" ]]; then
+        wait_for_completion_signal
+    fi
+
+    # Keep NodeODM alive so it can accept new tasks from ClusterODM.
+    # The cleanup trap will see this flag and skip killing NodeODM.
+    export NODEODM_PRESERVE_ON_EXIT=1
+    echo "Monitoring loop exiting; NodeODM (PID: ${NODEODM_PID:-unknown}) will stay alive for new tasks"
 
     exit $NODE_EXIT_STATUS
 }

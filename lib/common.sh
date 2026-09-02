@@ -47,10 +47,21 @@ launch_multi_node_workers() {
     local host_idx=0
     for host in "${NODE_HOSTS[@]}"; do
         host_idx=$((host_idx + 1))
-        local child_index="${host_idx}-admin"
-        echo "[MULTI] Launching admin on $host (index $child_index)"
+        if [[ $host_idx -eq 1 ]]; then
+            # First node = admin
+            local child_index="${host_idx}-admin"
+            local child_role="admin"
+            local worker_id=0
+            echo "[MULTI] Launching admin on $host (index $child_index)"
+        else
+            # Subsequent nodes = workers
+            local child_index="${host_idx}-worker"
+            local child_role="worker"
+            local worker_id=$((host_idx - 1))
+            echo "[MULTI] Launching worker on $host (index $child_index)"
+        fi
         srun --overlap --nodes=1 --ntasks=1 -w "$host" bash -lc \
-            "cd \"$working_dir\" && NODEODM_CHILD=1 NODEODM_CHILD_INDEX=$child_index NODEODM_CHILD_ROLE=admin NODEODM_HOST_ID=$host_idx \"$SCRIPT_DIR/tapisjob_app.sh\"$replay_args" &
+            "cd \"$working_dir\" && export NODEODM_CHILD=1 NODEODM_CHILD_INDEX=$child_index NODEODM_CHILD_ROLE=$child_role NODEODM_HOST_ID=$host_idx NODEODM_WORKER_ID=$worker_id && exec \"$SCRIPT_DIR/tapisjob_app.sh\"$replay_args" &
         child_pids+=($!)
     done
 
@@ -103,8 +114,8 @@ export TAP_TOKEN="" LOGIN_PORT="" EXTERNAL_URL=""
 export NODEODM_BIND_ARGS="" NODEODM_SIF=""
 export COMPLETION_SERVER_PID="" NODEODM_EXIT_CODE_FILE=""
 export COMPLETE_FLAG="" NODEODM_COMPLETE_TOKEN="" NODEODM_COMPLETE_PORT=""
-export NODEODM_ROLE="admin" NODEODM_CHILD="${NODEODM_CHILD:-0}" NODEODM_CHILD_INDEX="primary" NODEODM_CHILD_ROLE="admin"
-export NODEODM_HOST_ID="0" NODEODM_WORKER_ID="0" NODEODM_JOB_INDEX="1" NODEODM_JOB_COUNT="1"
+export NODEODM_ROLE="${NODEODM_ROLE:-admin}" NODEODM_CHILD="${NODEODM_CHILD:-0}" NODEODM_CHILD_INDEX="${NODEODM_CHILD_INDEX:-primary}" NODEODM_CHILD_ROLE="${NODEODM_CHILD_ROLE:-admin}"
+export NODEODM_HOST_ID="${NODEODM_HOST_ID:-0}" NODEODM_WORKER_ID="${NODEODM_WORKER_ID:-0}" NODEODM_JOB_INDEX="${NODEODM_JOB_INDEX:-1}" NODEODM_JOB_COUNT="${NODEODM_JOB_COUNT:-1}"
 export NODEODM_REPLICAS_PER_JOB="1" MAX_CONCURRENCY="12"
 export NODEODM_USE_IMAGE_SOURCE="${NODEODM_USE_IMAGE_SOURCE:-0}"
 export NODEODM_SKIP_START="${NODEODM_SKIP_START:-0}"
@@ -115,10 +126,11 @@ export NV_FLAG="" HAS_GPU="0"
 export INPUT_DIR="" OUTPUT_DIR="" WORK_DIR="" WORK_DIR_BASE=""
 export ORIGINAL_ARGS=()
 export CHECKPOINT_LAST_SYNC="0" CHECKPOINT_SYNCING="0"
-export NODE_ACTIVITY_DIR="" NODE_ACTIVITY_FILE=""
+export NODE_ACTIVITY_DIR="" NODE_ACTIVITY_FILE="" SHUTDOWN_FLAG=""
 export REGISTERED_NODE_ID="" REGISTRATION_UUID=""
 export TASK_OUTPUT_LINE="0"
 export NODE_EXIT_STATUS="0"
+export NODEODM_PRESERVE_ON_EXIT="${NODEODM_PRESERVE_ON_EXIT:-0}"
 
 # Internal state
 MODULES_LOADED=0
@@ -151,63 +163,6 @@ init_logging() {
 }
 
 # =============================================================================
-# MULTI-NODE LAUNCH
-# =============================================================================
-launch_multi_node_workers() {
-    echo "[MULTI-DEBUG] NODEODM_CHILD='${NODEODM_CHILD:-unset}' SLURM_NODELIST='${SLURM_NODELIST:-unset}'"
-    if [[ "${NODEODM_CHILD:-0}" == "1" || -z "$SLURM_NODELIST" ]]; then
-        echo "[MULTI] Child or no nodelist - skipping multi-node launch"
-        return 1
-    fi
-
-    if ! command -v scontrol >/dev/null 2>&1; then
-        echo "scontrol not available; cannot fan out across nodes."
-        return 1
-    fi
-
-    mapfile -t NODE_HOSTS < <(scontrol show hostnames "$SLURM_NODELIST")
-    local host_count=${#NODE_HOSTS[@]}
-    if [[ "$host_count" -eq 0 ]]; then
-        echo "No hosts reported by SLURM_NODELIST ($SLURM_NODELIST); skipping multi-node launch."
-        return 1
-    fi
-    echo "Multi-node host list (${host_count} hosts): ${NODE_HOSTS[*]}"
-
-    local replay_args=""
-    if [[ "${#ORIGINAL_ARGS[@]}" -gt 0 ]]; then
-        for arg in "${ORIGINAL_ARGS[@]}"; do
-            replay_args+=" $(printf '%q' "$arg")"
-        done
-    fi
-
-    local working_dir
-    working_dir=$(pwd)
-    echo "Launching one NodeODM instance per LS6 node..."
-    local child_pids=()
-
-    local host_idx=0
-    for host in "${NODE_HOSTS[@]}"; do
-        host_idx=$((host_idx + 1))
-        local child_index="${host_idx}-admin"
-        echo "[MULTI] Launching admin on $host (index $child_index)"
-        srun --overlap --nodes=1 --ntasks=1 -w "$host" bash -lc \
-            "cd \"$working_dir\" && export NODEODM_CHILD=1 NODEODM_CHILD_INDEX=$child_index NODEODM_CHILD_ROLE=admin NODEODM_HOST_ID=$host_idx && exec \"$SCRIPT_DIR/tapisjob_app.sh\"$replay_args" &
-        child_pids+=($!)
-    done
-
-    local status=0
-    for pid in "${child_pids[@]}"; do
-        wait "$pid"
-        local child_status=$?
-        if [[ "$child_status" -ne 0 && "$status" -eq 0 ]]; then
-            status=$child_status
-        fi
-    done
-
-    exit $status
-}
-
-# =============================================================================
 # MULTI-NODE COORDINATION
 # =============================================================================
 mark_node_active() {
@@ -229,12 +184,24 @@ any_sibling_active() {
     for f in "$NODE_ACTIVITY_DIR"/*; do
         [[ -e "$f" ]] || continue
         [[ "$f" == "$NODE_ACTIVITY_FILE" ]] && continue
+        [[ "$f" == "$SHUTDOWN_FLAG" ]] && continue
         mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
         if [[ $((now - mtime)) -le "$stale_after" ]]; then
             return 0
         fi
     done
     return 1
+}
+
+# Check if all nodes are idle (no active siblings)
+all_nodes_idle() {
+    [[ -n "$NODE_ACTIVITY_DIR" ]] || return 1
+    ! any_sibling_active
+}
+
+# Check if the coordinated shutdown flag exists
+is_shutdown_requested() {
+    [[ -n "$SHUTDOWN_FLAG" && -f "$SHUTDOWN_FLAG" ]]
 }
 
 # =============================================================================
@@ -283,7 +250,23 @@ cleanup() {
     local exit_code=$?
     echo "Cleaning up processes (exit code: $exit_code)..."
 
+    # When NODEODM_PRESERVE_ON_EXIT is set, the monitoring loop exited normally and
+    # NodeODM should stay alive to accept new tasks from ClusterODM. Skip all
+    # cleanup that would kill or deregister the node.
+    if [ "$NODEODM_PRESERVE_ON_EXIT" = "1" ]; then
+        echo "NODEODM_PRESERVE_ON_EXIT=1; keeping NodeODM (PID: ${NODEODM_PID:-unknown}) alive for new tasks"
+        echo "Skipping deregistration, shutdown notification, and process cleanup"
+        echo "Cleanup completed (exit code: $exit_code) — NodeODM preserved"
+        return 0
+    fi
+
     mark_node_idle
+
+    # Clean up shutdown flag if this node wrote it (admin node)
+    if [[ "$NODEODM_ROLE" == "admin" && -n "$SHUTDOWN_FLAG" && -f "$SHUTDOWN_FLAG" ]]; then
+        echo "Removing coordinated shutdown flag: $SHUTDOWN_FLAG"
+        rm -f "$SHUTDOWN_FLAG" 2>/dev/null || true
+    fi
 
     checkpoint_sync "exit" "${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}" || true
 
