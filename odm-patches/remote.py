@@ -112,11 +112,23 @@ class LocalRemoteExecutor:
         if not self.project_paths:
             return
 
+        # Allow explicit override of max remote tasks via env var.
+        # This bypasses the auto-calibration heuristic which can be overly conservative
+        # when the first batch of tasks hits a temporarily busy node.
+        env_max_remote = os.environ.get("NODEODM_MAX_REMOTE_TASKS", "")
+        env_override = None
+        if env_max_remote:
+            try:
+                env_override = max(1, int(env_max_remote))
+                log.ODM_INFO("LRE: NODEODM_MAX_REMOTE_TASKS=%s — using explicit override (auto-calibration disabled)" % env_max_remote)
+            except ValueError:
+                log.ODM_WARNING("LRE: Invalid NODEODM_MAX_REMOTE_TASKS=%s (expected integer); falling back to auto-calibration" % env_max_remote)
+
         # Shared variables across threads
         class nonloc:
             error = None
             local_processing = False
-            max_remote_tasks = None
+            max_remote_tasks = env_override  # None if no env override; set by auto-calibration otherwise
         
         calculate_task_limit_lock = threading.Lock()
         finished_tasks = AtomicCounter(0)
@@ -176,7 +188,11 @@ class LocalRemoteExecutor:
                                     pass
 
                             nonloc.max_remote_tasks = max(1, node_task_limit)
-                            log.ODM_INFO("LRE: Node task limit reached. Setting max remote tasks to %s" % node_task_limit)
+                            log.ODM_INFO("LRE: Node task limit reached. Auto-calibrated max_remote_tasks to %s (based on currently running tasks). "
+                                         "Set NODEODM_MAX_REMOTE_TASKS env var to override." % node_task_limit)
+                        else:
+                            log.ODM_INFO("LRE: Node task limit reached but max_remote_tasks already set to %s (running=%s)" %
+                                         (nonloc.max_remote_tasks, remote_running_tasks.value))
                                 
 
                 # Retry, but only if the error is not related to a task failure
@@ -200,9 +216,10 @@ class LocalRemoteExecutor:
                     if not local: remote_running_tasks.increment(-1)
             else:
                 if not partial:
-                    log.ODM_INFO("LRE: %s finished successfully" % task)
                     finished_tasks.increment()
                     if not local: remote_running_tasks.increment(-1)
+                    log.ODM_INFO("LRE: %s finished successfully (remaining running=%s/%s, finished=%s)" %
+                                 (task, remote_running_tasks.value, nonloc.max_remote_tasks, finished_tasks.value))
 
             cleanup_remote()
             if not partial: q.task_done()
@@ -246,6 +263,8 @@ class LocalRemoteExecutor:
                 # If we've found an estimate of the limit on the maximum number of tasks
                 # a node can process, we block until some tasks have completed
                 if nonloc.max_remote_tasks is not None and remote_running_tasks.value >= nonloc.max_remote_tasks:
+                    log.ODM_INFO("LRE: remote_worker throttled — max_remote_tasks=%s, running=%s (task=%s). Waiting for a slot." %
+                                 (nonloc.max_remote_tasks, remote_running_tasks.value, task))
                     q.put(task)
                     q.task_done()
                     time.sleep(2)
@@ -254,6 +273,8 @@ class LocalRemoteExecutor:
                 # Process remote
                 try:
                     remote_running_tasks.increment()
+                    log.ODM_INFO("LRE: remote_worker dispatching %s (running=%s/%s)" %
+                                 (task, remote_running_tasks.value, nonloc.max_remote_tasks))
                     task.process(False, handle_result)
                 except Exception as e:
                     handle_result(task, False, e)

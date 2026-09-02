@@ -34,7 +34,7 @@ create_nodeodm_config() {
   "maxConcurrency": $MAX_CONCURRENCY,
   "maxImages": 0,
   "cleanupTasksAfter": ${NODEODM_CLEANUP_MINUTES},
-  "token": "$TAP_TOKEN",
+  "token": "${_tapisJobOwner}",
   "parallelQueueProcessing": $PARALLEL_QUEUE,
   "maxParallelTasks": $MAX_PARALLEL_TASKS,
   "odm_path": "/code",
@@ -87,13 +87,20 @@ prepare_runtime_dir() {
         export APPTAINERENV__tapisJobWorkingDir="$_tapisJobWorkingDir"
         export SINGULARITYENV__tapisJobWorkingDir="$_tapisJobWorkingDir"
     fi
+    # Pass through NODEODM_MAX_REMOTE_TASKS to override the remote.py auto-calibration cap.
+    # Set this in imageSizeMapping.extraEnv or tapisjob_app.sh to control how many submodel
+    # tasks the seed can dispatch concurrently across the cluster.
+    if [[ -n "${NODEODM_MAX_REMOTE_TASKS:-}" ]]; then
+        export APPTAINERENV_NODEODM_MAX_REMOTE_TASKS="$NODEODM_MAX_REMOTE_TASKS"
+        export SINGULARITYENV_NODEODM_MAX_REMOTE_TASKS="$NODEODM_MAX_REMOTE_TASKS"
+    fi
     echo "ODM split-merge import_path: enabled=${ODM_REMOTE_USE_IMPORT_PATH} base=${ODM_IMPORT_PATH_BASE}"
 
-    echo "Using HTTP with TAP_TOKEN authentication (no SSL proxy needed)"
+    echo "Using HTTP with node auth token (user ID) for ClusterODM communication"
 
     # Preflight curl (will likely fail before startup; logged for diagnostics)
-    echo "Preflight: curl http://localhost:${NODEODM_PORT}/info?token=${TAP_TOKEN:0:8}... (expected fail before start)" | tee -a "$LOG_FILE"
-    curl -v --connect-timeout 5 "http://localhost:${NODEODM_PORT}/info?token=${TAP_TOKEN}" >> "$LOG_FILE" 2>&1 || true
+    echo "Preflight: curl http://localhost:${NODEODM_PORT}/info?token=${_tapisJobOwner}... (expected fail before start)" | tee -a "$LOG_FILE"
+    curl -v --connect-timeout 5 "http://localhost:${NODEODM_PORT}/info?token=${_tapisJobOwner}" >> "$LOG_FILE" 2>&1 || true
 
     # Ensure we have a local SIF image for NodeODM to avoid repeated remote pulls
     # Skip if NODEODM_SKIP_START=1 (local testing without Apptainer)
@@ -162,7 +169,7 @@ except Exception as e:
     print("opendm.remote import failed=%s" % e)
 PY
             echo "  container env import_path vars:"
-            env | sort | grep -E "^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir|APPTAINERENV_ODM_|SINGULARITYENV_ODM_)" || true
+            env | sort | grep -E "^(ODM_|NODEODM_IMPORT_PATH_ROOTS|NODEODM_MAX_REMOTE_TASKS|_tapisJobWorkingDir|APPTAINERENV_ODM_|SINGULARITYENV_ODM_)" || true
         ' >> "$LOG_FILE" 2>&1 || echo "WARNING: ODM runtime patch preflight failed; continuing so job logs can capture later failure"
 
     # Debug shell mode: keep the job/node alive and skip NodeODM launch so you can attach and run commands manually.
@@ -221,7 +228,7 @@ extract_node_modules() {
 # PREFLIGHT CHECKS
 # =============================================================================
 preflight_checks() {
-    echo "Starting NodeODM with HTTP and TAP_TOKEN authentication..."
+    echo "Starting NodeODM with HTTP and user ID authentication..."
     NODEODM_EXIT_CODE_FILE="$WORK_DIR/nodeodm_exit_code"
     rm -f "$NODEODM_EXIT_CODE_FILE"
     
@@ -260,7 +267,7 @@ except Exception as e:
     print("opendm.remote import failed=%s" % e)
 PY
             echo "  container env import_path vars:"
-            env | sort | grep -E "^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir|APPTAINERENV_ODM_|SINGULARITYENV_ODM_)" || true
+            env | sort | grep -E "^(ODM_|NODEODM_IMPORT_PATH_ROOTS|NODEODM_MAX_REMOTE_TASKS|_tapisJobWorkingDir|APPTAINERENV_ODM_|SINGULARITYENV_ODM_)" || true
         ' >> "$LOG_FILE" 2>&1 || echo "WARNING: ODM runtime patch preflight failed; continuing so job logs can capture later failure"
 }
 
@@ -299,12 +306,13 @@ launch_nodeodm() {
                     echo '[LAUNCH] ODM remote.py diagnostics'; \
                     (sha256sum /code/opendm/remote.py || true); \
                     (grep -n 'ODM_REMOTE_USE_IMPORT_PATH\|Attempting import_path submission\|Using flattened import_path' /code/opendm/remote.py | head -20 || true); \
-                    env | sort | grep -E '^(ODM_|NODEODM_IMPORT_PATH_ROOTS|_tapisJobWorkingDir)=' || true; \
+                    env | sort | grep -E '^(ODM_|NODEODM_IMPORT_PATH_ROOTS|NODEODM_MAX_REMOTE_TASKS|_tapisJobWorkingDir)=' || true; \
                     mkdir -p tmp data logs; \
                     export ODM_AI_MODELS_PATH=\"${ODM_AI_MODELS_PATH}\"; \
                     export ODM_REMOTE_USE_IMPORT_PATH=\"${ODM_REMOTE_USE_IMPORT_PATH}\"; \
                     export ODM_IMPORT_PATH_BASE=\"${ODM_IMPORT_PATH_BASE}\"; \
                     export NODEODM_IMPORT_PATH_ROOTS=\"${NODEODM_IMPORT_PATH_ROOTS:-}\"; \
+                    export NODEODM_MAX_REMOTE_TASKS=\"${NODEODM_MAX_REMOTE_TASKS:-}\"; \
                     export _tapisJobWorkingDir=${_tapisJobWorkingDir}; \
                     exec node index.js --config /tmp/nodeodm-config.json --log_level $NODEODM_LOG_LEVEL")
         if [[ "$REMORA_ENABLE" == "1" ]] && command -v remora >/dev/null 2>&1; then
@@ -317,7 +325,7 @@ launch_nodeodm() {
     ) >> "$LOG_FILE" 2>&1 &
 
     NODEODM_PID=$!
-    echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${TAP_TOKEN:0:8}...)"
+    echo "NodeODM PID: $NODEODM_PID (HTTP port: $NODEODM_PORT with token: ${_tapisJobOwner})"
 }
 
 # =============================================================================
@@ -374,12 +382,12 @@ verify_nodeodm_startup() {
     echo "Waiting for NodeODM to initialize..."
     sleep 15
 
-    # Test NodeODM connectivity with TAP_TOKEN
-    echo "Testing NodeODM connectivity with TAP_TOKEN authentication..."
+    # Test NodeODM connectivity with user ID token
+    echo "Testing NodeODM connectivity with user ID authentication..."
     for i in {1..10}; do
         # Test HTTP connection with token
-        echo "CURL TEST $i: curl -s 'http://localhost:$NODEODM_PORT/info?token=${TAP_TOKEN:0:10}...'"
-        NODEODM_INFO_TEST=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$TAP_TOKEN" 2>/dev/null)
+        echo "CURL TEST $i: curl -s 'http://localhost:$NODEODM_PORT/info?token=${_tapisJobOwner}'"
+        NODEODM_INFO_TEST=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$_tapisJobOwner" 2>/dev/null)
         if [ $? -eq 0 ] && [ -n "$NODEODM_INFO_TEST" ]; then
             echo "NodeODM is responding with token authentication on port $NODEODM_PORT"
             break
@@ -390,8 +398,8 @@ verify_nodeodm_startup() {
     done
 
     # Final connectivity test and info gathering (using HTTP with token)
-    echo "CURL FINAL TEST: curl -s 'http://localhost:$NODEODM_PORT/info?token=${TAP_TOKEN:0:10}...'"
-    NODEODM_INFO=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$TAP_TOKEN" 2>/dev/null)
+    echo "CURL FINAL TEST: curl -s 'http://localhost:$NODEODM_PORT/info?token=${_tapisJobOwner}'"
+    NODEODM_INFO=$(curl -s "http://localhost:$NODEODM_PORT/info?token=$_tapisJobOwner" 2>/dev/null)
     if [ $? -eq 0 ] && [ -n "$NODEODM_INFO" ]; then
         echo "NodeODM connectivity confirmed"
         echo "NodeODM Info:"

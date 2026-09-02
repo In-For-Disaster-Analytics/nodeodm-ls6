@@ -127,12 +127,18 @@ else
     echo "Running on LS6 host: $(hostname) (primary instance)"
 fi
 
+# Default NODEODM_MAX_REMOTE_TASKS to MAX_CONCURRENCY so the seed can dispatch
+# as many concurrent submodel tasks as the cluster can handle.
+# Override via imageSizeMapping.extraEnv or environment if a different cap is desired.
+NODEODM_MAX_REMOTE_TASKS=${NODEODM_MAX_REMOTE_TASKS:-$MAX_CONCURRENCY}
+
 echo "=== NodeODM Tapis Processing (ZIP Runtime) ==="
 echo "Processing started by: ${_tapisJobOwner}"
 echo "Job UUID: ${_tapisJobUUID}"
 echo "Input directory: $INPUT_DIR"
 echo "Output directory: $OUTPUT_DIR"
 echo "Max concurrency: $MAX_CONCURRENCY"
+echo "Max remote tasks (seed dispatch limit): $NODEODM_MAX_REMOTE_TASKS"
 echo "Port: $NODEODM_PORT"
 echo "NodeODM image: $NODEODM_IMAGE"
 echo ""
