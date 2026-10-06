@@ -6,10 +6,12 @@ cd "$SCRIPT_DIR"
 
 PACKAGE_NAME="nodeodx-ls6.zip"
 SKIP_UPLOAD="${SKIP_UPLOAD:-${SKIP_TAPIS_UPLOAD:-1}}"
-TAPIS_SYSTEM_ID="${TAPIS_SYSTEM_ID:-ptdatax.project.PTDATAX-225}"
+TAPIS_SYSTEM_ID="${TAPIS_SYSTEM_ID:-ptdatax.project.BCS26030}"
 TAPIS_REMOTE_DIR="${TAPIS_REMOTE_DIR:-NodeODX}"
 REMOTE_SSH_TARGET="${REMOTE_SSH_TARGET:-ls6}"
-REMOTE_UPLOAD_DIR="${REMOTE_UPLOAD_DIR:-/corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODX}"
+REMOTE_UPLOAD_DIR="${REMOTE_UPLOAD_DIR:-/corral/utexas/BCS26030/NodeODX}"
+CORRAL_GROUP="${CORRAL_GROUP:-G-829114}"
+CORRAL_READ_GROUP="${CORRAL_READ_GROUP:-G-820466}"
 
 test -f tapisjob_app.sh
 test -f app.json
@@ -33,6 +35,12 @@ if [[ "$SKIP_UPLOAD" == "1" ]]; then
     exit 0
 fi
 
-ssh "$REMOTE_SSH_TARGET" "mkdir -p '$REMOTE_UPLOAD_DIR'"
-scp "$PACKAGE_NAME" "$REMOTE_SSH_TARGET:${REMOTE_UPLOAD_DIR%/}/$PACKAGE_NAME"
-echo "Uploaded to $REMOTE_SSH_TARGET:${REMOTE_UPLOAD_DIR%/}/$PACKAGE_NAME"
+REMOTE_UPLOAD_PATH="${REMOTE_UPLOAD_DIR%/}/$PACKAGE_NAME"
+
+# Corral charges newly created files to the effective group. Stream the archive
+# through a shell using the allocation group rather than using scp directly,
+# because the caller's primary group may be the exhausted legacy allocation.
+ssh "$REMOTE_SSH_TARGET" \
+    "sg '$CORRAL_GROUP' -c 'set -eu; test -d \"$REMOTE_UPLOAD_DIR\"; test -w \"$REMOTE_UPLOAD_DIR\"; umask 007; tmp=\"$REMOTE_UPLOAD_PATH.tmp.\$\$\"; cat > \"\$tmp\"; setfacl -m g::rw-,g:$CORRAL_READ_GROUP:r--,m::rw- \"\$tmp\"; mv -f \"\$tmp\" \"$REMOTE_UPLOAD_PATH\"; stat -c \"owner=%U group=%G mode=%A path=%n\" \"$REMOTE_UPLOAD_PATH\"; getfacl \"$REMOTE_UPLOAD_PATH\"'" \
+    < "$PACKAGE_NAME"
+echo "Uploaded to $REMOTE_SSH_TARGET:$REMOTE_UPLOAD_PATH using group $CORRAL_GROUP"

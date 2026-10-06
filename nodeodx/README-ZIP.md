@@ -45,10 +45,12 @@ SKIP_UPLOAD=1 ./build-zip.sh
 unzip -t nodeodx-ls6.zip
 ```
 
-The default upload target is the existing LS6 storage location:
+The default upload target is the BCS26030 Corral allocation. The upload must
+run with effective group `G-829114`; the archive ACL grants read access to the
+legacy group `G-820466`:
 
 ```text
-tapis://ptdatax.project.PTDATAX-225/NodeODX/nodeodx-ls6.zip
+tapis://ptdatax.project.BCS26030/NodeODX/nodeodx-ls6.zip
 ```
 
 The build script never registers or updates the Tapis app. Register the app
