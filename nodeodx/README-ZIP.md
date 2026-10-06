@@ -50,7 +50,7 @@ run with effective group `G-829114`; the archive ACL grants read access to the
 legacy group `G-820466`:
 
 ```text
-tapis://ptdatax.project.BCS26030/NodeODX/nodeodx-ls6.zip
+tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/nodeodx-ls6.zip
 ```
 
 The build script never registers or updates the Tapis app. Register the app
