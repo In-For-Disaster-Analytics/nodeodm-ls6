@@ -1,0 +1,116 @@
+{
+  "id": "nodeodx-ls6",
+  "version": "0.1.0",
+  "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime and TACC reverse proxy.",
+  "owner": "${apiUserId}",
+  "enabled": true,
+  "runtime": "ZIP",
+  "containerImage": "tapis://cloud.data/corral-repl/tacc/aci/PT2050/projects/PTDATAX-225/NodeODX/nodeodx-ls6.zip",
+  "jobType": "BATCH",
+  "maxJobs": -1,
+  "maxJobsPerUser": 4,
+  "strictFileInputs": false,
+  "jobAttributes": {
+    "description": null,
+    "dynamicExecSystem": false,
+    "execSystemConstraints": null,
+    "execSystemId": "ls6",
+    "execSystemExecDir": "${JobWorkingDir}",
+    "execSystemInputDir": "${JobWorkingDir}/inputs",
+    "execSystemOutputDir": "${JobWorkingDir}/output",
+    "execSystemLogicalQueue": "vm-small",
+    "archiveSystemId": "cloud.data",
+    "archiveSystemDir": "HOST_EVAL($SCRATCH)/tapis-jobs-archive/${JobCreateDate}/${JobName}-${JobUUID}",
+    "archiveOnAppError": true,
+    "isMpi": false,
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "max_concurrency",
+          "description": "Maximum concurrent ODX tasks handled by this NodeODX service",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "12"
+        },
+        {
+          "name": "nodeodx_port",
+          "description": "Private compute-node port for NodeODX",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "3001"
+        },
+        {
+          "name": "cluster_url",
+          "description": "ClusterODM/ClusterODX registration endpoint",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "https://clusterodm.tacc.utexas.edu"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "name": "TACC Scheduler Profile",
+          "description": "Scheduler profile for HPC clusters at TACC",
+          "inputMode": "FIXED",
+          "arg": "--tapis-profile tacc-apptainer",
+          "notes": {"isHidden": true}
+        },
+        {
+          "name": "TAP Session Substring",
+          "description": "TAP Functions require the substring 'tap_' in the Slurm job name.",
+          "inputMode": "FIXED",
+          "arg": "--job-name ${JobName}-tap_",
+          "notes": {"isHidden": true}
+        }
+      ],
+      "envVariables": [
+        {
+          "key": "TAPIS_ACCESS_TOKEN",
+          "value": "${_tapisAccessToken}",
+          "description": "Tapis JWT used only for authenticated cluster registration and de-registration."
+        },
+        {
+          "key": "NODEODX_IMAGE",
+          "value": "webodm/nodeodx:latest",
+          "description": "NodeODX OCI image pulled into a SIF on Scratch. Pin this for acceptance runs."
+        },
+        {
+          "key": "NODEODX_IMPORT_PATH_ROOTS",
+          "value": "${_tapisJobWorkingDir}",
+          "description": "Colon-separated shared filesystem roots accepted by import_path."
+        },
+        {
+          "key": "NODEODX_REQUIRE_REGISTRATION",
+          "value": "1",
+          "description": "Fail the job if TAP reverse proxy or ClusterODM registration fails."
+        },
+        {
+          "key": "NODEODX_CLEANUP_TASKS_AFTER",
+          "value": "0",
+          "description": "Reserved for the runtime contract; Tapis/Slurm owns lifecycle cleanup."
+        }
+      ],
+      "archiveFilter": {
+        "includes": [],
+        "excludes": [],
+        "includeLaunchFiles": true
+      }
+    },
+    "fileInputs": [],
+    "fileInputArrays": [],
+    "nodeCount": 1,
+    "coresPerNode": 16,
+    "memoryMB": 30720,
+    "maxMinutes": 240,
+    "subscriptions": [],
+    "tags": []
+  },
+  "tags": ["portalName: ALL"],
+  "notes": {
+    "label": "NodeODX on LS6",
+    "helpUrl": "https://github.com/WebODM/NodeODX",
+    "helpText": "NodeODX service for ODX processing on LS6. The service is reachable externally through TACC TAP reverse SSH tunnels and uses shared Scratch/Corral paths for import_path submissions.",
+    "hideNodeCountAndCoresPerNode": false,
+    "isInteractive": false,
+    "icon": "camera",
+    "category": "Data Processing",
+    "queueFilter": ["vm-small", "normal", "development", "gpu-a100", "gpu-a100-dev", "gpu-a100-small"]
+  }
+}

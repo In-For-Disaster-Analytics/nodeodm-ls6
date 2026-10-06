@@ -1,0 +1,16 @@
+[Unit]
+Description=Start NodeODX Service Container
+
+[Service]
+Type=simple
+PIDFile=/run/nodeodx.pid
+User=odx
+Group=odx
+WorkingDirectory=/www
+ExecStart=/usr/bin/node index.js
+ExecStop=/bin/kill -s QUIT $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+
