@@ -1,6 +1,6 @@
 {
   "id": "nodeodx-ls6",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime and TACC reverse proxy.",
   "owner": "${apiUserId}",
   "enabled": true,
