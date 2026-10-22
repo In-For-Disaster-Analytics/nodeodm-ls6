@@ -12,8 +12,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$SCRIPT_DIR/nodeodx-source"
 
 MAX_CONCURRENCY="${1:-${NODEODX_DEFAULT_MAX_CONCURRENCY:-12}}"
-NODEODX_PORT="${2:-3001}"
-CLUSTER_URL="${3:-https://clusterodm.tacc.utexas.edu}"
+NODEODX_PORT="${2:-${NODEODX_PORT:-3001}}"
+CLUSTER_URL="${3:-${NODEODX_CLUSTER_URL:-https://clusterodm.tacc.utexas.edu}}"
+
+ORIGINAL_ARGS=("$@")
+NODEODX_CHILD="${NODEODX_CHILD:-0}"
+NODEODX_CHILD_INDEX="${NODEODX_CHILD_INDEX:-}"
+NODEODX_HOST_INDEX="${NODEODX_HOST_INDEX:-}"
+NODEODX_JOB_INDEX="${NODEODX_JOB_INDEX:-1}"
+NODEODX_JOB_COUNT="${NODEODX_JOB_COUNT:-1}"
 
 if [[ ! "$MAX_CONCURRENCY" =~ ^[0-9]+$ || "$MAX_CONCURRENCY" -lt 1 ]]; then
     echo "ERROR: max concurrency must be a positive integer" >&2
@@ -24,6 +31,68 @@ if [[ ! "$NODEODX_PORT" =~ ^[0-9]+$ || "$NODEODX_PORT" -lt 1 || "$NODEODX_PORT" 
     exit 2
 fi
 
+launch_multi_node_children() {
+    [[ "$NODEODX_CHILD" == "1" ]] && return 1
+    [[ -n "${SLURM_NODELIST:-}" ]] || return 1
+    command -v scontrol >/dev/null 2>&1 || return 1
+
+    local -a node_hosts=()
+    while IFS= read -r host; do
+        [[ -n "$host" ]] && node_hosts+=("$host")
+    done < <(scontrol show hostnames "$SLURM_NODELIST")
+    local host_count=${#node_hosts[@]}
+    (( host_count > 1 )) || return 1
+
+    if ! command -v srun >/dev/null 2>&1; then
+        echo "ERROR: srun is required for a multi-node NodeODX allocation" >&2
+        exit 1
+    fi
+    if (( NODEODX_PORT + host_count - 1 > 65535 )); then
+        echo "ERROR: NodeODX port range ${NODEODX_PORT}-$((NODEODX_PORT + host_count - 1)) exceeds TCP port limits" >&2
+        exit 2
+    fi
+
+    echo "Multi-node host list (${host_count} hosts): ${node_hosts[*]}"
+    echo "Launching one NodeODX instance per LS6 host"
+
+    local -a child_pids=()
+    local host_index=0
+    local host child_index child_port
+    for host in "${node_hosts[@]}"; do
+        host_index=$((host_index + 1))
+        child_index="node-${host_index}"
+        child_port=$((NODEODX_PORT + host_index - 1))
+        echo "[MULTI] Launching NodeODX child=${child_index} host=${host} port=${child_port}"
+        srun --overlap --nodes=1 --ntasks=1 -w "$host" \
+            env NODEODX_CHILD=1 \
+                NODEODX_CHILD_INDEX="$child_index" \
+                NODEODX_HOST_INDEX="$host_index" \
+                NODEODX_JOB_INDEX="$host_index" \
+                NODEODX_JOB_COUNT="$host_count" \
+                bash "$SCRIPT_DIR/tapisjob_app.sh" \
+                "$MAX_CONCURRENCY" "$child_port" "$CLUSTER_URL" &
+        child_pids+=("$!")
+    done
+
+    local status=0 child_status pid
+    for pid in "${child_pids[@]}"; do
+        if wait "$pid"; then
+            child_status=0
+        else
+            child_status=$?
+        fi
+        if (( child_status != 0 && status == 0 )); then
+            status=$child_status
+        fi
+    done
+    exit "$status"
+}
+
+# A multi-node Tapis allocation must explicitly fan out service processes;
+# Slurm's nodeCount alone does not start or register them. Child launchers set
+# NODEODX_CHILD=1 and execute only the normal single-node startup path below.
+launch_multi_node_children || true
+
 JOB_DIR="${_tapisJobWorkingDir:-$PWD}"
 JOB_ID="${SLURM_JOB_ID:-local-$$}"
 SCRATCH_ROOT="${SCRATCH:-}"
@@ -32,13 +101,24 @@ if [[ -n "${SLURM_JOB_ID:-}" && -z "$SCRATCH_ROOT" && "${NODEODX_ALLOW_NON_SCRAT
     exit 2
 fi
 
-WORK_ROOT="${NODEODX_WORK_ROOT:-${SCRATCH_ROOT:-/tmp}/nodeodx_${JOB_ID}}"
-SIF_PATH="${NODEODX_SIF_PATH:-$WORK_ROOT/nodeodx.sif}"
+BASE_WORK_ROOT="${NODEODX_WORK_ROOT:-${SCRATCH_ROOT:-/tmp}/nodeodx_${JOB_ID}}"
+if [[ "$NODEODX_CHILD" == "1" ]]; then
+    CHILD_WORK_SUFFIX="${NODEODX_CHILD_INDEX:-${NODEODX_HOST_INDEX:-child}}"
+    WORK_ROOT="${BASE_WORK_ROOT%/}/$CHILD_WORK_SUFFIX"
+else
+    WORK_ROOT="$BASE_WORK_ROOT"
+fi
+if [[ -n "${NODEODX_SIF_PATH:-}" ]]; then
+    SIF_PATH="$NODEODX_SIF_PATH"
+else
+    SIF_PATH="$WORK_ROOT/nodeodx.sif"
+fi
 NODEODX_IMAGE="${NODEODX_IMAGE:-webodm/nodeodx:latest}"
 NODEODX_IMPORT_PATH_ROOTS="${NODEODX_IMPORT_PATH_ROOTS:-$JOB_DIR}"
 NODE_TOKEN="${NODEODX_NODE_TOKEN:-${_tapisJobOwner:-nodeodx-${USER:-unknown}}}"
 REGISTRATION_ACCESS_TOKEN="${TAPIS_ACCESS_TOKEN:-${_tapisAccessToken:-}}"
 NODEODX_CLEANUP_TASKS_AFTER="${NODEODX_CLEANUP_TASKS_AFTER:-0}"
+NODEODX_REQUIRE_REGISTRATION="${NODEODX_REQUIRE_REGISTRATION:-1}"
 if [[ ! "$NODEODX_CLEANUP_TASKS_AFTER" =~ ^[0-9]+$ ]]; then
     echo "ERROR: NODEODX_CLEANUP_TASKS_AFTER must be a non-negative integer" >&2
     exit 2
@@ -93,7 +173,7 @@ export SINGULARITYENV_NODEODX_IMPORT_PATH_ROOTS="$NODEODX_IMPORT_PATH_ROOTS"
 export APPTAINERENV__tapisJobWorkingDir="$JOB_DIR"
 export SINGULARITYENV__tapisJobWorkingDir="$JOB_DIR"
 
-log "job=$JOB_ID port=$NODEODX_PORT image=$NODEODX_IMAGE"
+log "job=$JOB_ID child=${NODEODX_CHILD_INDEX:-primary} host_index=${NODEODX_HOST_INDEX:-1} port=$NODEODX_PORT image=$NODEODX_IMAGE"
 log "work root=$WORK_ROOT"
 log "import roots=$NODEODX_IMPORT_PATH_ROOTS"
 
@@ -278,6 +358,10 @@ if [[ -n "$REGISTERED_HOST" ]]; then
     export NODEODX_REGISTRATION_HOST="$REGISTERED_HOST"
     export NODEODX_REGISTRATION_PORT="$REGISTERED_PORT"
     export NODEODX_REGISTRATION_UUID="$REGISTRATION_UUID"
+    export NODEODX_REGISTRATION_CHILD_INDEX="${NODEODX_CHILD_INDEX:-primary}"
+    export NODEODX_REGISTRATION_HOST_INDEX="${NODEODX_HOST_INDEX:-1}"
+    export NODEODX_REGISTRATION_JOB_INDEX="$NODEODX_JOB_INDEX"
+    export NODEODX_REGISTRATION_JOB_COUNT="$NODEODX_JOB_COUNT"
     export NODEODX_REGISTRATION_OWNER="${_tapisJobOwner:-$USER}"
     export NODEODX_REGISTRATION_TOKEN="$NODE_TOKEN"
     export NODEODX_REGISTRATION_JOB_UUID="${_tapisJobUUID:-$JOB_ID}"
@@ -293,6 +377,10 @@ p = {
     "tapisJobOwner": os.environ["NODEODX_REGISTRATION_OWNER"],
     "nodeReady": True,
     "role": "admin",
+    "childIndex": os.environ["NODEODX_REGISTRATION_CHILD_INDEX"],
+    "hostId": int(os.environ["NODEODX_REGISTRATION_HOST_INDEX"]),
+    "jobIndex": int(os.environ["NODEODX_REGISTRATION_JOB_INDEX"]),
+    "jobCount": int(os.environ["NODEODX_REGISTRATION_JOB_COUNT"]),
 }
 print(json.dumps(p))
 PY
@@ -309,11 +397,11 @@ PY
     else
         log "WARNING: ClusterODM registration did not succeed"
         printf '%s\n' "$REGISTRATION_RESPONSE" > "$WORK_ROOT/registration-response.txt"
-        if [[ "${NODEODX_REQUIRE_REGISTRATION:-0}" == "1" ]]; then
+        if [[ "${NODEODX_REQUIRE_REGISTRATION}" == "1" ]]; then
             exit 1
         fi
     fi
-elif [[ "${NODEODX_REQUIRE_REGISTRATION:-0}" == "1" ]]; then
+elif [[ "${NODEODX_REQUIRE_REGISTRATION}" == "1" ]]; then
     log "ERROR: registration required but TAP reverse proxy is unavailable"
     exit 1
 fi

@@ -8,6 +8,11 @@ supplies the Node runtime, dependencies, and the ODX
 engine at `/code`; the package overlays the NodeODX source so the shared
 filesystem `import_path` extension under test is the code that runs.
 
+When Tapis allocates more than one LS6 host, the launcher uses `srun` to start
+one NodeODX child per host. Each child receives a unique local port, TAP
+reverse-proxy endpoint, Scratch work root, and ClusterODM registration
+metadata. A one-host allocation follows the normal single-service path.
+
 ## Why the reverse proxy is part of the app
 
 LS6 compute nodes are not directly reachable from ClusterODM or WebODM. When
@@ -20,16 +25,20 @@ TAP functions are available, the launcher:
 5. keeps the tunnels alive until the Tapis job exits.
 
 No direct compute-node hostname is registered. If the TAP setup or cluster
-registration fails and `NODEODX_REQUIRE_REGISTRATION=1`, the job exits rather
-than presenting an unusable node.
+registration fails, the job exits rather than presenting an unusable node.
+
+The Tapis app exposes only two user parameters: `max_concurrency` and
+`nodeodx_port`. The image, import roots, registration policy, cleanup policy,
+and ClusterODM endpoint are launcher defaults rather than user-editable app
+inputs.
 
 ## Shared filesystem inputs
 
-NodeODX accepts a form field named `import_path`. The path must be under
-`NODEODX_IMPORT_PATH_ROOTS`, and the launcher binds the configured roots at the
-same absolute paths inside Apptainer. On LS6 the job working directory and the
-current user's `$SCRATCH` root are allowed by default; Corral roots must be
-added explicitly. This avoids copying large image sets over HTTP. All runtime
+NodeODX accepts a form field named `import_path`. The path must be under the
+job working directory or the current user's `$SCRATCH` root, and the launcher
+binds those roots at the same absolute paths inside Apptainer. Corral roots
+must be added explicitly in a later runtime configuration. This avoids copying
+large image sets over HTTP. All runtime
 state, SIFs, task data, and logs are placed under Scratch.
 
 The app does not build ODX on macOS, use Docker on LS6, or use `sudo`. The
@@ -58,12 +67,17 @@ only after the ZIP and source/image pins have been reviewed.
 
 ## LS6 acceptance checks
 
-Run the Tapis job on `vm-small` with `NODEODX_REQUIRE_REGISTRATION=1`, then
+Run the Tapis job on `vm-small`, first with two nodes and then with four nodes, then
 verify from a reachable client:
 
 ```bash
 curl -fsS 'http://ls6.tacc.utexas.edu:<login-port>/info?token=<NodeODX-token>'
 ```
+
+The job log should contain one `[MULTI] Launching NodeODX` line per allocated
+host. ClusterODM should show one registered node per TAP endpoint. The app
+definition keeps `nodeCount` at one by default; choose the requested node count
+in the Tapis job configuration when testing multi-node behavior.
 
 Submit a small `import_path` task using a directory under Scratch and verify
 the NodeODX task UUID, status transitions, ODX artifacts, and cleanup. The

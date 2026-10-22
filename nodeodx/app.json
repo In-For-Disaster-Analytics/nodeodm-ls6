@@ -1,7 +1,7 @@
 {
   "id": "nodeodx-ls6",
-  "version": "0.1.1",
-  "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime and TACC reverse proxy.",
+  "version": "0.1.3",
+  "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime, TACC reverse proxy, and multi-node launch.",
   "owner": "${apiUserId}",
   "enabled": true,
   "runtime": "ZIP",
@@ -36,12 +36,6 @@
           "description": "Private compute-node port for NodeODX",
           "inputMode": "INCLUDE_ON_DEMAND",
           "arg": "3001"
-        },
-        {
-          "name": "cluster_url",
-          "description": "ClusterODM/ClusterODX registration endpoint",
-          "inputMode": "INCLUDE_ON_DEMAND",
-          "arg": "https://clusterodm.tacc.utexas.edu"
         }
       ],
       "schedulerOptions": [
@@ -60,33 +54,7 @@
           "notes": {"isHidden": true}
         }
       ],
-      "envVariables": [
-        {
-          "key": "TAPIS_ACCESS_TOKEN",
-          "value": "${_tapisAccessToken}",
-          "description": "Tapis JWT used only for authenticated cluster registration and de-registration."
-        },
-        {
-          "key": "NODEODX_IMAGE",
-          "value": "webodm/nodeodx:latest",
-          "description": "NodeODX OCI image pulled into a SIF on Scratch. Pin this for acceptance runs."
-        },
-        {
-          "key": "NODEODX_IMPORT_PATH_ROOTS",
-          "value": "${_tapisJobWorkingDir}",
-          "description": "Colon-separated shared filesystem roots accepted by import_path."
-        },
-        {
-          "key": "NODEODX_REQUIRE_REGISTRATION",
-          "value": "1",
-          "description": "Fail the job if TAP reverse proxy or ClusterODM registration fails."
-        },
-        {
-          "key": "NODEODX_CLEANUP_TASKS_AFTER",
-          "value": "0",
-          "description": "Reserved for the runtime contract; Tapis/Slurm owns lifecycle cleanup."
-        }
-      ],
+      "envVariables": [],
       "archiveFilter": {
         "includes": [],
         "excludes": [],
@@ -106,7 +74,7 @@
   "notes": {
     "label": "NodeODX on LS6",
     "helpUrl": "https://github.com/WebODM/NodeODX",
-    "helpText": "NodeODX service for ODX processing on LS6. The service is reachable externally through TACC TAP reverse SSH tunnels and uses shared Scratch/Corral paths for import_path submissions.",
+    "helpText": "NodeODX service for ODX processing on LS6. A multi-node allocation starts and registers one NodeODX service per host through TACC TAP reverse SSH tunnels and uses shared Scratch/Corral paths for import_path submissions.",
     "hideNodeCountAndCoresPerNode": false,
     "isInteractive": false,
     "icon": "camera",
