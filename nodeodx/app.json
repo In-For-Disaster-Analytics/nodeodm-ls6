@@ -1,11 +1,11 @@
 {
   "id": "nodeodx-ls6",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime, TACC reverse proxy, and multi-node launch.",
   "owner": "${apiUserId}",
   "enabled": true,
   "runtime": "ZIP",
-  "containerImage": "tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/nodeodx-ls6.zip",
+  "containerImage": "tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.17/nodeodx-ls6.zip",
   "jobType": "BATCH",
   "maxJobs": -1,
   "maxJobsPerUser": 4,
@@ -56,9 +56,14 @@
       ],
       "envVariables": [
         {
-          "key": "NODEODM_CLEANUP_MINUTES",
+          "key": "NODEODX_CLEANUP_TASKS_AFTER",
           "value": "0",
           "description": "Minutes before NodeODX deletes completed or canceled task data. 0 disables NodeODX cleanup so Tapis/Slurm owns lifecycle cleanup."
+        },
+        {
+          "key": "NODEODX_IMPORT_PATH_ROOTS",
+          "value": "/corral/utexas/BCS26030/webodm/media",
+          "description": "Shared Corral media root used by ClusterODX import_path task handoff."
         }
       ],
       "archiveFilter": {

@@ -75,11 +75,11 @@ run with effective group `G-829114`; the archive ACL grants read access to the
 legacy group `G-820466`:
 
 ```text
-tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/nodeodx-ls6.zip
+tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.17/nodeodx-ls6.zip
 ```
 
 The build script never registers or updates the Tapis app. Register app
-version `1.0.16` only after the ZIP and source/image pins have been reviewed.
+version `1.0.17` only after the ZIP and source/image pins have been reviewed.
 ClusterODX injects the request-scoped `TAPIS_ACCESS_TOKEN` into each submitted
 job; the launcher sends it as the bearer credential for both worker
 registration and shutdown deregistration, without logging the token. Do not
