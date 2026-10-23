@@ -1,6 +1,6 @@
 {
   "id": "nodeodx-ls6",
-  "version": "0.1.3",
+  "version": "1.0.16",
   "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime, TACC reverse proxy, and multi-node launch.",
   "owner": "${apiUserId}",
   "enabled": true,
@@ -54,11 +54,17 @@
           "notes": {"isHidden": true}
         }
       ],
-      "envVariables": [],
+      "envVariables": [
+        {
+          "key": "NODEODM_CLEANUP_MINUTES",
+          "value": "0",
+          "description": "Minutes before NodeODX deletes completed or canceled task data. 0 disables NodeODX cleanup so Tapis/Slurm owns lifecycle cleanup."
+        }
+      ],
       "archiveFilter": {
         "includes": [],
         "excludes": [],
-        "includeLaunchFiles": true
+        "includeLaunchFiles": false
       }
     },
     "fileInputs": [],

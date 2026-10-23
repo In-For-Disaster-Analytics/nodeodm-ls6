@@ -8,6 +8,15 @@ supplies the Node runtime, dependencies, and the ODX
 engine at `/code`; the package overlays the NodeODX source so the shared
 filesystem `import_path` extension under test is the code that runs.
 
+At startup the launcher resolves the image's real Node binary instead of the
+image's shell wrapper, verifies that the production `multer` dependency is
+available, and exits with a clear log message if the production dependency
+tree cannot be resolved. When the image is incomplete, it installs the
+package's production dependencies in the job-local runtime with lifecycle
+scripts disabled. Set
+`NODEODX_INSTALL_DEPENDENCIES=0` to require a fully populated image and fail
+closed instead.
+
 When Tapis allocates more than one LS6 host, the launcher uses `srun` to start
 one NodeODX child per host. Each child receives a unique local port, TAP
 reverse-proxy endpoint, Scratch work root, and ClusterODM registration
@@ -26,6 +35,13 @@ TAP functions are available, the launcher:
 
 No direct compute-node hostname is registered. If the TAP setup or cluster
 registration fails, the job exits rather than presenting an unusable node.
+
+Registration diagnostics are written beneath the job work root. The launcher
+records the HTTP status, curl status, endpoint, response headers, and a redacted
+response summary in `registration-response.txt`, `registration-headers.txt`,
+and the launch log. The ClusterODM reverse proxy must route `/webhook` to the
+admin web port (normally 10000); routing it to the main proxy port (normally
+3000) returns the main proxy's `Cannot handle /webhook...` 404.
 
 The Tapis app exposes only two user parameters: `max_concurrency` and
 `nodeodx_port`. The image, import roots, registration policy, cleanup policy,
@@ -62,8 +78,14 @@ legacy group `G-820466`:
 tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/nodeodx-ls6.zip
 ```
 
-The build script never registers or updates the Tapis app. Register the app
-only after the ZIP and source/image pins have been reviewed.
+The build script never registers or updates the Tapis app. Register app
+version `1.0.16` only after the ZIP and source/image pins have been reviewed.
+ClusterODX injects the request-scoped `TAPIS_ACCESS_TOKEN` into each submitted
+job; the launcher sends it as the bearer credential for both worker
+registration and shutdown deregistration, without logging the token. Do not
+use the historical `${_tapisAccessToken}` app-definition macro: current Tapis
+leaves it literal. Launch files are not archived so the bearer token is not
+retained in the job archive.
 
 ## LS6 acceptance checks
 
