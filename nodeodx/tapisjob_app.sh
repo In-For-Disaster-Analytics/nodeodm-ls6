@@ -6,6 +6,14 @@
 # login-node port and this launcher keeps reverse SSH tunnels alive while the
 # NodeODX process is serving requests.
 #
+if [ -z "${BASH_VERSION:-}" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    fi
+    echo "ERROR: NodeODX launcher must be run with bash" >&2
+    exit 1
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,7 +121,7 @@ if [[ -n "${NODEODX_SIF_PATH:-}" ]]; then
 else
     SIF_PATH="$WORK_ROOT/nodeodx.sif"
 fi
-NODEODX_IMAGE="${NODEODX_IMAGE:-webodm/nodeodx:latest}"
+NODEODX_IMAGE="${NODEODX_IMAGE:-webodm/nodeodx:1.0.18}"
 NODEODX_IMPORT_PATH_ROOTS="${NODEODX_IMPORT_PATH_ROOTS:-$JOB_DIR}"
 NODE_TOKEN="${NODEODX_NODE_TOKEN:-${_tapisJobOwner:-nodeodx-${USER:-unknown}}}"
 REGISTRATION_ACCESS_TOKEN="${TAPIS_ACCESS_TOKEN:-${_tapisAccessToken:-}}"
@@ -192,7 +200,7 @@ if [[ ! -s "$SIF_PATH" ]]; then
 fi
 if [[ ! -d "$RUNTIME_DIR/node_modules" ]]; then
     log "extracting NodeODX node_modules from the SIF"
-    apptainer exec "$SIF_PATH" sh -lc 'cd /var/www && tar -cf - node_modules' \
+    apptainer exec "$SIF_PATH" bash -lc 'cd /var/www && test -d node_modules && tar -cf - node_modules' \
         | tar -xf - -C "$RUNTIME_DIR"
 fi
 
@@ -293,9 +301,47 @@ trap cleanup EXIT TERM INT
 NODEODX_BIND_ARGS=(--writable-tmpfs --bind "$RUNTIME_DIR:/var/www:rw" --bind "$CONFIG_PATH:/tmp/nodeodx-config.json:ro")
 NODEODX_BIND_ARGS+=("${BIND_ARGS[@]}")
 
+resolve_node_binary() {
+    apptainer exec "$SIF_PATH" sh -c '
+        for candidate in /usr/local/nvm/versions/node/*/bin/node /usr/bin/node; do
+            if [ -x "$candidate" ] && [ ! -L "$candidate" ]; then
+                printf "%s\\n" "$candidate"
+                exit 0
+            fi
+        done
+        exit 1
+    '
+}
+
+NODEODX_RUNTIME_NODE="${NODEODX_NODE_BINARY:-$(resolve_node_binary)}"
+NODEODX_RUNTIME_NODE_DIR="${NODEODX_RUNTIME_NODE%/*}"
+export APPTAINERENV_NODEODX_RUNTIME_NODE="$NODEODX_RUNTIME_NODE"
+NODEODX_IMAGE_PATH="$(apptainer exec "$SIF_PATH" sh -c 'printf "%s" "${PATH:-}"')"
+export APPTAINERENV_PATH="$NODEODX_RUNTIME_NODE_DIR${NODEODX_IMAGE_PATH:+:$NODEODX_IMAGE_PATH}"
+export SINGULARITYENV_PATH="$APPTAINERENV_PATH"
+
+DEPENDENCY_CHECK_SCRIPT='const p=require("./package.json"); const missing=Object.keys(p.dependencies||{}).filter((name)=>{try{require.resolve(name);return false}catch(_){return true}}); if(missing.length){console.error("missing production dependencies: "+missing.join(", ")); process.exit(1)}'
+
+verify_runtime_dependencies() {
+    if apptainer exec --pwd /var/www "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" \
+        "$NODEODX_RUNTIME_NODE" -e "$DEPENDENCY_CHECK_SCRIPT" \
+        >>"$LOG_FILE" 2>&1; then
+        log "verified NodeODX production dependency tree"
+        return 0
+    fi
+
+    log "ERROR: NodeODX runtime image does not provide the complete production dependency tree"
+    log "ERROR: rebuild and republish $NODEODX_IMAGE with production dependencies before submitting another job"
+    return 1
+}
+
+if ! verify_runtime_dependencies; then
+    exit 1
+fi
+
 log "starting NodeODX"
-apptainer exec "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" \
-    sh -lc 'cd /var/www && exec node index.js --config /tmp/nodeodx-config.json' \
+apptainer exec --pwd /var/www "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" \
+    "$NODEODX_RUNTIME_NODE" index.js --config /tmp/nodeodx-config.json \
     >>"$LOG_FILE" 2>&1 &
 NODEODX_PID=$!
 
@@ -385,18 +431,58 @@ p = {
 print(json.dumps(p))
 PY
 )"
-    CURL_ARGS=(-fsS --connect-timeout 15 -X POST -H 'Content-Type: application/json')
+    REGISTRATION_RESPONSE_FILE="$WORK_ROOT/registration-response.txt"
+    REGISTRATION_HEADERS_FILE="$WORK_ROOT/registration-headers.txt"
+    CURL_ARGS=(-sS --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json')
     if [[ -n "$REGISTRATION_ACCESS_TOKEN" ]]; then
         CURL_ARGS+=(-H "Authorization: Bearer ${REGISTRATION_ACCESS_TOKEN}")
     fi
-    REGISTRATION_RESPONSE="$(curl "${CURL_ARGS[@]}" --data "$REGISTRATION_PAYLOAD" \
-        "$CLUSTER_URL/webhook/register-node" 2>&1 || true)"
+    REGISTRATION_HTTP_CODE=""
+    REGISTRATION_CURL_STATUS=0
+    REGISTRATION_HTTP_CODE="$(curl "${CURL_ARGS[@]}" \
+        -D "$REGISTRATION_HEADERS_FILE" \
+        -o "$REGISTRATION_RESPONSE_FILE" \
+        -w '%{http_code}' \
+        --data "$REGISTRATION_PAYLOAD" \
+        "$CLUSTER_URL/webhook/register-node" 2>/dev/null)" || REGISTRATION_CURL_STATUS=$?
+    REGISTRATION_RESPONSE="$(cat "$REGISTRATION_RESPONSE_FILE" 2>/dev/null || true)"
     if [[ "$REGISTRATION_RESPONSE" == *'"success":true'* ]]; then
         REGISTERED_NODE_ID="$(extract_node_id "$REGISTRATION_RESPONSE")"
         log "registered NodeODX with ClusterODM at ${REGISTERED_HOST}:${REGISTERED_PORT}"
     else
-        log "WARNING: ClusterODM registration did not succeed"
-        printf '%s\n' "$REGISTRATION_RESPONSE" > "$WORK_ROOT/registration-response.txt"
+        log "WARNING: ClusterODM registration did not succeed (http_status=${REGISTRATION_HTTP_CODE:-unknown}, curl_status=$REGISTRATION_CURL_STATUS, endpoint=$CLUSTER_URL/webhook/register-node)"
+        if [[ -n "$REGISTRATION_RESPONSE" ]]; then
+            REGISTRATION_RESPONSE_SUMMARY="$(python3 - "$REGISTRATION_RESPONSE_FILE" <<'PY'
+import json
+import re
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+        body = handle.read()
+except OSError:
+    body = ""
+
+try:
+    value = json.loads(body)
+    sensitive = re.compile(r"token|secret|password|authorization|access_token|refresh_token", re.I)
+
+    def redact(item):
+        if isinstance(item, dict):
+            return {key: "[REDACTED]" if sensitive.search(key) else redact(val) for key, val in item.items()}
+        if isinstance(item, list):
+            return [redact(entry) for entry in item]
+        return item
+
+    summary = json.dumps(redact(value), separators=(",", ":"))
+except (json.JSONDecodeError, TypeError):
+    summary = re.sub(r"(?i)(bearer\s+)[^\s\"']+", r"\1[REDACTED]", body)
+
+print(summary[:2000])
+PY
+)"
+            log "registration response: $REGISTRATION_RESPONSE_SUMMARY"
+        fi
         if [[ "${NODEODX_REQUIRE_REGISTRATION}" == "1" ]]; then
             exit 1
         fi

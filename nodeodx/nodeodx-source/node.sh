@@ -5,6 +5,6 @@ if [ -z "$NVM_DIR" ]; then
     exit 1
 fi
 
-source $NVM_DIR/nvm.sh
+. "$NVM_DIR/nvm.sh"
 nvm use $NODE_VERSION
 exec node "$@"

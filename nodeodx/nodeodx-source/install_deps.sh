@@ -17,7 +17,7 @@ done
 
 mkdir -p $NVM_DIR
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-source $NVM_DIR/nvm.sh
+. "$NVM_DIR/nvm.sh"
 nvm install $NODE_VERSION
 nvm alias default $NODE_VERSION
 
@@ -28,3 +28,24 @@ for i in {1..20}; do
 done
 
 npm install --production
+
+# The runtime image is the dependency contract for the Tapis ZIP launcher.
+# Fail the image build if any production dependency cannot be resolved; do not
+# defer installation to an LS6 job, where package installation is unreliable.
+node - <<'NODE'
+const packageJson = require('./package.json');
+const missing = Object.keys(packageJson.dependencies || {}).filter((name) => {
+    try {
+        require.resolve(name);
+        return false;
+    } catch (_) {
+        return true;
+    }
+});
+if (missing.length) {
+    console.error(`missing production dependencies: ${missing.join(', ')}`);
+    process.exit(1);
+}
+require.resolve('multer');
+console.log('verified NodeODX production dependency tree');
+NODE

@@ -9,13 +9,11 @@ engine at `/code`; the package overlays the NodeODX source so the shared
 filesystem `import_path` extension under test is the code that runs.
 
 At startup the launcher resolves the image's real Node binary instead of the
-image's shell wrapper, verifies that the production `multer` dependency is
-available, and exits with a clear log message if the production dependency
-tree cannot be resolved. When the image is incomplete, it installs the
-package's production dependencies in the job-local runtime with lifecycle
-scripts disabled. Set
-`NODEODX_INSTALL_DEPENDENCIES=0` to require a fully populated image and fail
-closed instead.
+image's shell wrapper, verifies that the complete production dependency tree
+(including `multer`) is available, and exits with a clear log message if the
+image is incomplete. Production dependencies are installed and verified during
+the container image build; the Tapis job never runs package installation on
+LS6.
 
 When Tapis allocates more than one LS6 host, the launcher uses `srun` to start
 one NodeODX child per host. Each child receives a unique local port, TAP
@@ -75,11 +73,11 @@ run with effective group `G-829114`; the archive ACL grants read access to the
 legacy group `G-820466`:
 
 ```text
-tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.17/nodeodx-ls6.zip
+tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.18/nodeodx-ls6.zip
 ```
 
 The build script never registers or updates the Tapis app. Register app
-version `1.0.17` only after the ZIP and source/image pins have been reviewed.
+version `1.0.18` only after the ZIP and source/image pins have been reviewed.
 ClusterODX injects the request-scoped `TAPIS_ACCESS_TOKEN` into each submitted
 job; the launcher sends it as the bearer credential for both worker
 registration and shutdown deregistration, without logging the token. Do not

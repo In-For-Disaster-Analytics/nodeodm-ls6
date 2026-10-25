@@ -24,7 +24,9 @@ mkdir -p /var/www
 mkdir -p "/var/www"
 cd "/var/www"
 
-npm install --production && mkdir -p tmp
+npm install --production && \
+node -e "require.resolve('multer')" && \
+mkdir -p tmp
 
 %runscript
 cd "/var/www"

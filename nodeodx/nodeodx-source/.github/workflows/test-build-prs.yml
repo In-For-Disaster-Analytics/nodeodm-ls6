@@ -1,4 +1,4 @@
-name: Build PRs
+name: Build NodeODX pull requests
 
 on:
   pull_request:
@@ -6,27 +6,35 @@ on:
 jobs:
   docker:
     runs-on: ubuntu-latest
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
     steps:
-    - name: Checkout
-      uses: actions/checkout@v2
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v1
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v1
-      with:
-          driver-opts: network=host
-    - name: Build
-      uses: docker/build-push-action@v2
-      with:
-        context: .
-        platforms: linux/amd64
-        push: true
-        tags: localhost:5000/webodm/nodeodx:test
-    - name: Test Powercycle
-      run: |
-        docker run --rm localhost:5000/webodm/nodeodx:test --powercycle
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CPU image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./nodeodx/nodeodx-source
+          file: ./nodeodx/nodeodx-source/Dockerfile
+          load: true
+          tags: webodm/nodeodx:test
+          cache-from: type=gha,scope=nodeodx-pr
+          cache-to: type=gha,mode=max,scope=nodeodx-pr
+
+      - name: Verify production dependencies and Node runtime
+        run: |
+          docker run --rm --entrypoint /bin/bash webodm/nodeodx:test -lc '
+            . "$NVM_DIR/nvm.sh"
+            nvm use "$NODE_VERSION"
+            cd /var/www
+            command -v npm
+            npm --version
+            test "$(node -p "process.version")" = "v14.21.3"
+            node -e "require.resolve('multer')"
+            node -e "console.log(process.execPath)"
+          '
+
+      - name: Test powercycle
+        run: docker run --rm webodm/nodeodx:test --powercycle
