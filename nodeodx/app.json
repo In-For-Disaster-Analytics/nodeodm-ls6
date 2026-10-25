@@ -1,0 +1,95 @@
+{
+  "id": "nodeodx-ls6",
+  "version": "1.0.18",
+  "description": "NodeODX on LS6 using a Scratch-backed Apptainer runtime, TACC reverse proxy, and multi-node launch.",
+  "owner": "${apiUserId}",
+  "enabled": true,
+  "runtime": "ZIP",
+  "containerImage": "tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.18/nodeodx-ls6.zip",
+  "jobType": "BATCH",
+  "maxJobs": -1,
+  "maxJobsPerUser": 4,
+  "strictFileInputs": false,
+  "jobAttributes": {
+    "description": null,
+    "dynamicExecSystem": false,
+    "execSystemConstraints": null,
+    "execSystemId": "ls6",
+    "execSystemExecDir": "${JobWorkingDir}",
+    "execSystemInputDir": "${JobWorkingDir}/inputs",
+    "execSystemOutputDir": "${JobWorkingDir}/output",
+    "execSystemLogicalQueue": "vm-small",
+    "archiveSystemId": "cloud.data",
+    "archiveSystemDir": "HOST_EVAL($SCRATCH)/tapis-jobs-archive/${JobCreateDate}/${JobName}-${JobUUID}",
+    "archiveOnAppError": true,
+    "isMpi": false,
+    "parameterSet": {
+      "appArgs": [
+        {
+          "name": "max_concurrency",
+          "description": "Maximum concurrent ODX tasks handled by this NodeODX service",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "12"
+        },
+        {
+          "name": "nodeodx_port",
+          "description": "Private compute-node port for NodeODX",
+          "inputMode": "INCLUDE_ON_DEMAND",
+          "arg": "3001"
+        }
+      ],
+      "schedulerOptions": [
+        {
+          "name": "TACC Scheduler Profile",
+          "description": "Scheduler profile for HPC clusters at TACC",
+          "inputMode": "FIXED",
+          "arg": "--tapis-profile tacc-apptainer",
+          "notes": {"isHidden": true}
+        },
+        {
+          "name": "TAP Session Substring",
+          "description": "TAP Functions require the substring 'tap_' in the Slurm job name.",
+          "inputMode": "FIXED",
+          "arg": "--job-name ${JobName}-tap_",
+          "notes": {"isHidden": true}
+        }
+      ],
+      "envVariables": [
+        {
+          "key": "NODEODX_CLEANUP_TASKS_AFTER",
+          "value": "0",
+          "description": "Minutes before NodeODX deletes completed or canceled task data. 0 disables NodeODX cleanup so Tapis/Slurm owns lifecycle cleanup."
+        },
+        {
+          "key": "NODEODX_IMPORT_PATH_ROOTS",
+          "value": "/corral/utexas/BCS26030/webodm/media",
+          "description": "Shared Corral media root used by ClusterODX import_path task handoff."
+        }
+      ],
+      "archiveFilter": {
+        "includes": [],
+        "excludes": [],
+        "includeLaunchFiles": false
+      }
+    },
+    "fileInputs": [],
+    "fileInputArrays": [],
+    "nodeCount": 1,
+    "coresPerNode": 16,
+    "memoryMB": 30720,
+    "maxMinutes": 240,
+    "subscriptions": [],
+    "tags": []
+  },
+  "tags": ["portalName: ALL"],
+  "notes": {
+    "label": "NodeODX on LS6",
+    "helpUrl": "https://github.com/WebODM/NodeODX",
+    "helpText": "NodeODX service for ODX processing on LS6. A multi-node allocation starts and registers one NodeODX service per host through TACC TAP reverse SSH tunnels and uses shared Scratch/Corral paths for import_path submissions.",
+    "hideNodeCountAndCoresPerNode": false,
+    "isInteractive": false,
+    "icon": "camera",
+    "category": "Data Processing",
+    "queueFilter": ["vm-small", "normal", "development", "gpu-a100", "gpu-a100-dev", "gpu-a100-small"]
+  }
+}
