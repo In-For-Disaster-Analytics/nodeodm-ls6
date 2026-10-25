@@ -4,6 +4,6 @@ Commit: 340afc86c255dcad686e942b3fe30f8beaf29e1f
 Branch: upgrade/nodeodx-tacc-ls6
 Version: 2.3.1
 
-The runtime image defaults to webodm/nodeodx:1.0.18. Record its immutable OCI
+The runtime image defaults to ghcr.io/in-for-disaster-analytics/nodeodx:1.0.18. Record its immutable OCI
 digest and the resulting SIF sha256 in the LS6 acceptance manifest before
 treating a run as a release candidate.

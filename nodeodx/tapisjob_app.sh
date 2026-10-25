@@ -121,7 +121,7 @@ if [[ -n "${NODEODX_SIF_PATH:-}" ]]; then
 else
     SIF_PATH="$WORK_ROOT/nodeodx.sif"
 fi
-NODEODX_IMAGE="${NODEODX_IMAGE:-webodm/nodeodx:1.0.18}"
+NODEODX_IMAGE="${NODEODX_IMAGE:-ghcr.io/in-for-disaster-analytics/nodeodx:1.0.18}"
 NODEODX_IMPORT_PATH_ROOTS="${NODEODX_IMPORT_PATH_ROOTS:-$JOB_DIR}"
 NODE_TOKEN="${NODEODX_NODE_TOKEN:-${_tapisJobOwner:-nodeodx-${USER:-unknown}}}"
 REGISTRATION_ACCESS_TOKEN="${TAPIS_ACCESS_TOKEN:-${_tapisAccessToken:-}}"

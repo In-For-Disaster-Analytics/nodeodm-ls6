@@ -15,7 +15,7 @@ We recommend that you setup NodeODX using [Docker](https://www.docker.com/).
 
 * From a command prompt / terminal type:
 ```
-docker run -p 3000:3000 webodm/nodeodx
+docker run -p 3000:3000 ghcr.io/in-for-disaster-analytics/nodeodx
 ```
 
 Linux users can connect to 127.0.0.1.
@@ -105,7 +105,7 @@ You can use [CloudODX](https://github.com/WebODM/CloudODX) to run tasks with Nod
 If you want to store results on a separate drive, map the `/var/www/data` folder to the location of your drive:
 
 ```bash
-docker run -p 3000:3000 -v /mnt/external_hd:/var/www/data webodm/nodeodx
+docker run -p 3000:3000 -v /mnt/external_hd:/var/www/data ghcr.io/in-for-disaster-analytics/nodeodx
 ```
 
 This can be also used to access the computation results directly from the file system.
@@ -132,10 +132,10 @@ NodeODX resolves and validates the path, creates a symlink from the task's `data
 
 ## Using GPU Acceleration
 
-Since ODX has support [for GPU acceleration](https://github.com/https://github.com/WebODM/ODX#gpu-acceleration) you can use another base image for GPU processing. You need to use the `webodm/nodeodx:gpu` docker image instead of `webodm/nodeodx` and you need to pass the `--gpus all` flag:
+Since ODX has support [for GPU acceleration](https://github.com/https://github.com/WebODM/ODX#gpu-acceleration) you can use another base image for GPU processing. You need to use the `ghcr.io/in-for-disaster-analytics/nodeodx:gpu` image instead of `ghcr.io/in-for-disaster-analytics/nodeodx` and you need to pass the `--gpus all` flag:
 
 ```bash
-docker run -p 3000:3000 --gpus all webodm/nodeodx:gpu
+docker run -p 3000:3000 --gpus all ghcr.io/in-for-disaster-analytics/nodeodx:gpu
 ```
 
 The GPU implementation is CUDA-based, so will only work on NVIDIA GPUs.

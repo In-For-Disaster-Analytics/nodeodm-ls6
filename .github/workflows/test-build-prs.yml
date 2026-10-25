@@ -19,13 +19,13 @@ jobs:
           context: ./nodeodx/nodeodx-source
           file: ./nodeodx/nodeodx-source/Dockerfile
           load: true
-          tags: webodm/nodeodx:test
+          tags: ghcr.io/in-for-disaster-analytics/nodeodx:test
           cache-from: type=gha,scope=nodeodx-pr
           cache-to: type=gha,mode=max,scope=nodeodx-pr
 
       - name: Verify production dependencies and Node runtime
         run: |
-          docker run --rm --entrypoint /bin/bash webodm/nodeodx:test -lc '
+          docker run --rm --entrypoint /bin/bash ghcr.io/in-for-disaster-analytics/nodeodx:test -lc '
             . "$NVM_DIR/nvm.sh"
             nvm use "$NODE_VERSION"
             cd /var/www
@@ -37,4 +37,4 @@ jobs:
           '
 
       - name: Test powercycle
-        run: docker run --rm webodm/nodeodx:test --powercycle
+        run: docker run --rm ghcr.io/in-for-disaster-analytics/nodeodx:test --powercycle

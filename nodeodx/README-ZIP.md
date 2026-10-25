@@ -1,7 +1,7 @@
 # NodeODX LS6 Tapis app
 
 This package launches the pinned NodeODX source on a TACC LS6 allocation. It
-uses the official `webodm/nodeodx` OCI image pulled into a per-job Apptainer
+uses the published `ghcr.io/in-for-disaster-analytics/nodeodx` OCI image pulled into a per-job Apptainer
 SIF on `$SCRATCH` by default. Set `NODEODX_SIF_PATH` to a preseeded Scratch
 cache only after making that cache immutable and concurrency-safe. The image
 supplies the Node runtime, dependencies, and the ODX
