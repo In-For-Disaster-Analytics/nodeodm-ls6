@@ -20,6 +20,6 @@ RUN bash install_deps.sh && \
     ln -s /code/SuperBuild/install/bin/entwine /usr/bin/entwine && \
     ln -s /code/SuperBuild/install/bin/pdal /usr/bin/pdal && \
     ln -s /var/www/node.sh /usr/bin/node && \
-    mkdir -p tmp && node index.js --powercycle
+    mkdir -p data logs tmp && node index.js --powercycle
 
 ENTRYPOINT ["/usr/bin/node", "/var/www/index.js"]
