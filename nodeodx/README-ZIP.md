@@ -31,13 +31,20 @@ TAP functions are available, the launcher:
 4. registers `ls6.tacc.utexas.edu:<login-port>` with the configured cluster;
 5. keeps the tunnels alive until the Tapis job exits.
 
-No direct compute-node hostname is registered. If the TAP setup or cluster
-registration fails, the job exits rather than presenting an unusable node.
+No direct compute-node hostname is registered. Registration is diagnostic and
+retryable by default: if TAP setup or ClusterODM registration fails, the
+launcher records the HTTP/curl result and keeps NodeODX alive so the Tapis job
+can be inspected and the registration path can be tested manually. Set
+`NODEODX_REQUIRE_REGISTRATION=1` in a deployment that must fail fast when a
+worker cannot register.
 
 Registration diagnostics are written beneath the job work root. The launcher
 records the HTTP status, curl status, endpoint, response headers, and a redacted
 response summary in `registration-response.txt`, `registration-headers.txt`,
-and the launch log. The ClusterODM reverse proxy must route `/webhook` to the
+and the launch log. On registration failure it also writes the exact JSON body
+to `registration-payload.json` with mode `600` and logs a copy/pasteable curl
+command. Export `TAPIS_ACCESS_TOKEN` in the job shell before running that
+command; the JWT itself is never printed. The ClusterODX reverse proxy must route `/webhook` to the
 admin web port (normally 10000); routing it to the main proxy port (normally
 3000) returns the main proxy's `Cannot handle /webhook...` 404.
 

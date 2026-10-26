@@ -126,7 +126,11 @@ NODEODX_IMPORT_PATH_ROOTS="${NODEODX_IMPORT_PATH_ROOTS:-$JOB_DIR}"
 NODE_TOKEN="${NODEODX_NODE_TOKEN:-${_tapisJobOwner:-nodeodx-${USER:-unknown}}}"
 REGISTRATION_ACCESS_TOKEN="${TAPIS_ACCESS_TOKEN:-${_tapisAccessToken:-}}"
 NODEODX_CLEANUP_TASKS_AFTER="${NODEODX_CLEANUP_TASKS_AFTER:-0}"
-NODEODX_REQUIRE_REGISTRATION="${NODEODX_REQUIRE_REGISTRATION:-1}"
+# Keep the NodeODX service alive when ClusterODM registration is unavailable so
+# the Tapis job can be inspected and the registration path can be retried or
+# tested manually. Production deployments that require registration can opt
+# back into fail-fast behavior with NODEODX_REQUIRE_REGISTRATION=1.
+NODEODX_REQUIRE_REGISTRATION="${NODEODX_REQUIRE_REGISTRATION:-0}"
 if [[ ! "$NODEODX_CLEANUP_TASKS_AFTER" =~ ^[0-9]+$ ]]; then
     echo "ERROR: NODEODX_CLEANUP_TASKS_AFTER must be a non-negative integer" >&2
     exit 2
@@ -448,9 +452,14 @@ PY
     REGISTRATION_RESPONSE="$(cat "$REGISTRATION_RESPONSE_FILE" 2>/dev/null || true)"
     if [[ "$REGISTRATION_RESPONSE" == *'"success":true'* ]]; then
         REGISTERED_NODE_ID="$(extract_node_id "$REGISTRATION_RESPONSE")"
-        log "registered NodeODX with ClusterODM at ${REGISTERED_HOST}:${REGISTERED_PORT}"
+        log "registered NodeODX with ClusterODX at ${REGISTERED_HOST}:${REGISTERED_PORT}"
     else
-        log "WARNING: ClusterODM registration did not succeed (http_status=${REGISTRATION_HTTP_CODE:-unknown}, curl_status=$REGISTRATION_CURL_STATUS, endpoint=$CLUSTER_URL/webhook/register-node)"
+        REGISTRATION_PAYLOAD_FILE="$WORK_ROOT/registration-payload.json"
+        printf '%s\n' "$REGISTRATION_PAYLOAD" > "$REGISTRATION_PAYLOAD_FILE"
+        chmod 600 "$REGISTRATION_PAYLOAD_FILE"
+        MANUAL_REGISTRATION_CURL="curl --noproxy '*' -sS -i --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json' -H \"Authorization: Bearer \$TAPIS_ACCESS_TOKEN\" --data-binary @$REGISTRATION_PAYLOAD_FILE \"$CLUSTER_URL/webhook/register-node\""
+        log "WARNING: ClusterODX registration did not succeed (http_status=${REGISTRATION_HTTP_CODE:-unknown}, curl_status=$REGISTRATION_CURL_STATUS, endpoint=$CLUSTER_URL/webhook/register-node)"
+        log "manual registration curl (export TAPIS_ACCESS_TOKEN first): $MANUAL_REGISTRATION_CURL"
         if [[ -n "$REGISTRATION_RESPONSE" ]]; then
             REGISTRATION_RESPONSE_SUMMARY="$(python3 - "$REGISTRATION_RESPONSE_FILE" <<'PY'
 import json
@@ -485,11 +494,15 @@ PY
         fi
         if [[ "${NODEODX_REQUIRE_REGISTRATION}" == "1" ]]; then
             exit 1
+        else
+            log "continuing with NodeODX alive; registration is optional (set NODEODX_REQUIRE_REGISTRATION=1 to fail fast)"
         fi
     fi
 elif [[ "${NODEODX_REQUIRE_REGISTRATION}" == "1" ]]; then
     log "ERROR: registration required but TAP reverse proxy is unavailable"
     exit 1
+else
+    log "continuing with NodeODX alive; TAP reverse proxy or registration is unavailable"
 fi
 
 cat > "$WORK_ROOT/connection_info.txt" <<EOF
