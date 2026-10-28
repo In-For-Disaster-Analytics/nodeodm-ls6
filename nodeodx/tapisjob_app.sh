@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$SCRIPT_DIR/nodeodx-source"
 
 MAX_CONCURRENCY="${1:-${NODEODX_DEFAULT_MAX_CONCURRENCY:-12}}"
+NODEODX_PARALLEL_QUEUE_PROCESSING="${NODEODX_PARALLEL_QUEUE_PROCESSING:-64}"
+NODEODX_SHARED_SUBMODEL_V1="${NODEODX_SHARED_SUBMODEL_V1:-0}"
 NODEODX_PORT="${2:-${NODEODX_PORT:-3001}}"
 CLUSTER_URL="${3:-${NODEODX_CLUSTER_URL:-https://clusterodm.tacc.utexas.edu}}"
 
@@ -29,13 +31,27 @@ NODEODX_CHILD_INDEX="${NODEODX_CHILD_INDEX:-}"
 NODEODX_HOST_INDEX="${NODEODX_HOST_INDEX:-}"
 NODEODX_JOB_INDEX="${NODEODX_JOB_INDEX:-1}"
 NODEODX_JOB_COUNT="${NODEODX_JOB_COUNT:-1}"
+NODEODX_ROLE="${NODEODX_ROLE:-admin}"
+NODEODX_WORKER_ID="${NODEODX_WORKER_ID:-0}"
 
 if [[ ! "$MAX_CONCURRENCY" =~ ^[0-9]+$ || "$MAX_CONCURRENCY" -lt 1 ]]; then
     echo "ERROR: max concurrency must be a positive integer" >&2
     exit 2
 fi
+if [[ ! "$NODEODX_PARALLEL_QUEUE_PROCESSING" =~ ^[0-9]+$ || "$NODEODX_PARALLEL_QUEUE_PROCESSING" -lt 1 ]]; then
+    echo "ERROR: NODEODX_PARALLEL_QUEUE_PROCESSING must be a positive integer" >&2
+    exit 2
+fi
 if [[ ! "$NODEODX_PORT" =~ ^[0-9]+$ || "$NODEODX_PORT" -lt 1 || "$NODEODX_PORT" -gt 65535 ]]; then
     echo "ERROR: NodeODX port must be a valid TCP port" >&2
+    exit 2
+fi
+if [[ "$NODEODX_ROLE" != "admin" && "$NODEODX_ROLE" != "worker" ]]; then
+    echo "ERROR: NODEODX_ROLE must be admin or worker" >&2
+    exit 2
+fi
+if [[ "$NODEODX_SHARED_SUBMODEL_V1" != "0" && "$NODEODX_SHARED_SUBMODEL_V1" != "1" ]]; then
+    echo "ERROR: NODEODX_SHARED_SUBMODEL_V1 must be 0 or 1" >&2
     exit 2
 fi
 
@@ -65,18 +81,23 @@ launch_multi_node_children() {
 
     local -a child_pids=()
     local host_index=0
-    local host child_index child_port
+    local host child_index child_port child_role worker_id
     for host in "${node_hosts[@]}"; do
         host_index=$((host_index + 1))
-        child_index="node-${host_index}"
+        child_role="worker"
+        if (( host_index == 1 )); then child_role="admin"; fi
+        worker_id=$((host_index - 1))
+        child_index="${host_index}-${child_role}"
         child_port=$((NODEODX_PORT + host_index - 1))
-        echo "[MULTI] Launching NodeODX child=${child_index} host=${host} port=${child_port}"
+        echo "[MULTI] Launching NodeODX role=${child_role} child=${child_index} host=${host} port=${child_port}"
         srun --overlap --nodes=1 --ntasks=1 -w "$host" \
             env NODEODX_CHILD=1 \
                 NODEODX_CHILD_INDEX="$child_index" \
                 NODEODX_HOST_INDEX="$host_index" \
-                NODEODX_JOB_INDEX="$host_index" \
-                NODEODX_JOB_COUNT="$host_count" \
+                NODEODX_ROLE="$child_role" \
+                NODEODX_WORKER_ID="$worker_id" \
+                NODEODX_JOB_INDEX="$NODEODX_JOB_INDEX" \
+                NODEODX_JOB_COUNT="$NODEODX_JOB_COUNT" \
                 bash "$SCRIPT_DIR/tapisjob_app.sh" \
                 "$MAX_CONCURRENCY" "$child_port" "$CLUSTER_URL" &
         child_pids+=("$!")
@@ -212,8 +233,13 @@ export NODEODX_CONFIG_PATH="$CONFIG_PATH"
 export NODEODX_CONFIG_PORT="$NODEODX_PORT"
 export NODEODX_CONFIG_TOKEN="$NODE_TOKEN"
 export NODEODX_CONFIG_MAX_CONCURRENCY="$MAX_CONCURRENCY"
+export NODEODX_CONFIG_PARALLEL_QUEUE_PROCESSING="$NODEODX_PARALLEL_QUEUE_PROCESSING"
 export NODEODX_CONFIG_ROOTS="$NODEODX_IMPORT_PATH_ROOTS"
 export NODEODX_CONFIG_CLEANUP="$NODEODX_CLEANUP_TASKS_AFTER"
+export NODEODX_CONFIG_SHARED_V1="$NODEODX_SHARED_SUBMODEL_V1"
+export NODEODX_CONFIG_SHARED_ROOT="${BASE_WORK_ROOT:-}"
+export NODEODX_CONFIG_SHARED_JOB_UUID="${_tapisJobUUID:-}"
+export NODEODX_CONFIG_SHARED_IMAGE_ROOTS="${NODEODX_SHARED_IMAGE_ROOTS:-}"
 python3 - "$CONFIG_PATH" <<'PY'
 import json
 import os
@@ -223,12 +249,16 @@ config = {
     "instance": "NodeODX-LS6",
     "odx_path": "/code",
     "port": int(os.environ["NODEODX_CONFIG_PORT"]),
-    "parallelQueueProcessing": 1,
+    "parallelQueueProcessing": int(os.environ["NODEODX_CONFIG_PARALLEL_QUEUE_PROCESSING"]),
     "cleanupTasksAfter": int(os.environ["NODEODX_CONFIG_CLEANUP"]),
     "cleanupUploadsAfter": int(os.environ["NODEODX_CONFIG_CLEANUP"]),
     "maxConcurrency": int(os.environ["NODEODX_CONFIG_MAX_CONCURRENCY"]),
     "token": os.environ["NODEODX_CONFIG_TOKEN"],
     "importPathRoots": [p for p in os.environ["NODEODX_CONFIG_ROOTS"].split(":") if p],
+    "sharedSubmodelV1": os.environ["NODEODX_CONFIG_SHARED_V1"] == "1",
+    "sharedSubmodelRoot": os.environ["NODEODX_CONFIG_SHARED_ROOT"],
+    "sharedSubmodelJobUuid": os.environ["NODEODX_CONFIG_SHARED_JOB_UUID"],
+    "sharedSubmodelImageRoots": [p for p in os.environ["NODEODX_CONFIG_SHARED_IMAGE_ROOTS"].split(":") if p],
     "logger": {
         "level": "info",
         "logDirectory": "/var/www/logs",
@@ -324,6 +354,39 @@ NODEODX_IMAGE_PATH="$(apptainer exec "$SIF_PATH" sh -c 'printf "%s" "${PATH:-}"'
 export APPTAINERENV_PATH="$NODEODX_RUNTIME_NODE_DIR${NODEODX_IMAGE_PATH:+:$NODEODX_IMAGE_PATH}"
 export SINGULARITYENV_PATH="$APPTAINERENV_PATH"
 
+# The ZIP supplies NodeODX source; ODX itself comes from the pinned image.
+# Never advertise shared submission against an image with the old upload-only engine.
+if [[ "$NODEODX_SHARED_SUBMODEL_V1" == "1" ]]; then
+    if [[ -z "${_tapisJobUUID:-}" ]]; then
+        log "ERROR: shared submodels require the trusted Tapis job UUID"
+        exit 2
+    fi
+    if ! apptainer exec --pwd /code "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" python3 -c \
+        'from opendm import remote; assert getattr(remote, "SHARED_SUBMODEL_V1", False) is True, "image lacks shared-submodel engine v1"; print("Shared-submodel engine:", remote.__file__)' \
+        >>"$LOG_FILE" 2>&1; then
+        log "ERROR: pinned image does not provide the shared-submodel engine contract; rebuild the ODX-derived image"
+        exit 1
+    fi
+    export APPTAINERENV_NODEODX_SHARED_SUBMODEL_ENGINE_V1=1
+    export SINGULARITYENV_NODEODX_SHARED_SUBMODEL_ENGINE_V1=1
+    export APPTAINERENV_ODX_SHARED_SUBMODEL_V1=1
+    export SINGULARITYENV_ODX_SHARED_SUBMODEL_V1=1
+    export APPTAINERENV_ODX_SHARED_DATA_ROOT="$RUNTIME_DIR/data"
+    export SINGULARITYENV_ODX_SHARED_DATA_ROOT="$RUNTIME_DIR/data"
+    export APPTAINERENV_ODX_SHARED_CONTAINER_ROOT=/var/www/data
+    export SINGULARITYENV_ODX_SHARED_CONTAINER_ROOT=/var/www/data
+    export APPTAINERENV_ODX_SHARED_ALLOCATION_ROOT="$BASE_WORK_ROOT"
+    export SINGULARITYENV_ODX_SHARED_ALLOCATION_ROOT="$BASE_WORK_ROOT"
+    export APPTAINERENV_ODX_SHARED_JOB_UUID="$_tapisJobUUID"
+    export SINGULARITYENV_ODX_SHARED_JOB_UUID="$_tapisJobUUID"
+else
+    # An inherited opt-in must not enable the engine behind a disabled node API.
+    export APPTAINERENV_NODEODX_SHARED_SUBMODEL_ENGINE_V1=0
+    export SINGULARITYENV_NODEODX_SHARED_SUBMODEL_ENGINE_V1=0
+    export APPTAINERENV_ODX_SHARED_SUBMODEL_V1=0
+    export SINGULARITYENV_ODX_SHARED_SUBMODEL_V1=0
+fi
+
 DEPENDENCY_CHECK_SCRIPT='const p=require("./package.json"); const missing=Object.keys(p.dependencies||{}).filter((name)=>{try{require.resolve(name);return false}catch(_){return true}}); if(missing.length){console.error("missing production dependencies: "+missing.join(", ")); process.exit(1)}'
 
 verify_runtime_dependencies() {
@@ -404,6 +467,9 @@ fi
 if [[ -n "$REGISTERED_HOST" ]]; then
     REGISTRATION_UUID="${_tapisJobUUID:-$JOB_ID}"
     REGISTRATION_UUID="${REGISTRATION_UUID%-*}"
+    if [[ "$NODEODX_ROLE" == "worker" ]]; then
+        REGISTRATION_UUID="${REGISTRATION_UUID}-worker-${NODEODX_WORKER_ID}"
+    fi
     REGISTERED_REGISTRATION_UUID="$REGISTRATION_UUID"
     export NODEODX_REGISTRATION_HOST="$REGISTERED_HOST"
     export NODEODX_REGISTRATION_PORT="$REGISTERED_PORT"
@@ -412,6 +478,8 @@ if [[ -n "$REGISTERED_HOST" ]]; then
     export NODEODX_REGISTRATION_HOST_INDEX="${NODEODX_HOST_INDEX:-1}"
     export NODEODX_REGISTRATION_JOB_INDEX="$NODEODX_JOB_INDEX"
     export NODEODX_REGISTRATION_JOB_COUNT="$NODEODX_JOB_COUNT"
+    export NODEODX_REGISTRATION_ROLE="$NODEODX_ROLE"
+    export NODEODX_REGISTRATION_WORKER_ID="$NODEODX_WORKER_ID"
     export NODEODX_REGISTRATION_OWNER="${_tapisJobOwner:-$USER}"
     export NODEODX_REGISTRATION_TOKEN="$NODE_TOKEN"
     export NODEODX_REGISTRATION_JOB_UUID="${_tapisJobUUID:-$JOB_ID}"
@@ -426,7 +494,9 @@ p = {
     "tapisJobUuid": os.environ["NODEODX_REGISTRATION_JOB_UUID"],
     "tapisJobOwner": os.environ["NODEODX_REGISTRATION_OWNER"],
     "nodeReady": True,
-    "role": "admin",
+    "role": os.environ["NODEODX_REGISTRATION_ROLE"],
+    "workerId": int(os.environ["NODEODX_REGISTRATION_WORKER_ID"]),
+    "replicasPerJob": 1,
     "childIndex": os.environ["NODEODX_REGISTRATION_CHILD_INDEX"],
     "hostId": int(os.environ["NODEODX_REGISTRATION_HOST_INDEX"]),
     "jobIndex": int(os.environ["NODEODX_REGISTRATION_JOB_INDEX"]),

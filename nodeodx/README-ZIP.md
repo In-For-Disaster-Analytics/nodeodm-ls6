@@ -18,7 +18,20 @@ LS6.
 When Tapis allocates more than one LS6 host, the launcher uses `srun` to start
 one NodeODX child per host. Each child receives a unique local port, TAP
 reverse-proxy endpoint, Scratch work root, and ClusterODM registration
-metadata. A one-host allocation follows the normal single-service path.
+metadata. The first host registers as `admin` and receives the parent task;
+remaining hosts register as ordinary `worker` nodes for split-merge dispatch,
+matching `nodeodm-ls6`. Each worker has a distinct registration UUID and worker
+ID; host indices do not change the parent Tapis job index/count. A one-host
+allocation follows the normal admin service path. All sibling services share
+one Slurm allocation and terminate when that allocation ends.
+
+Each NodeODX instance defaults to 64 simultaneous processing tasks, advertised
+as `maxParallelTasks` by `/info`. Set `NODEODX_PARALLEL_QUEUE_PROCESSING` to a
+positive integer to override this capacity. This is independent of
+`max_concurrency`, which limits threads within each task (12 by default).
+For example, 64 tasks at 12 threads each can request roughly 768 threads on
+one host; choose these settings together for the allocation's CPU and memory.
+The new default applies to jobs started with the updated launcher.
 
 ## Why the reverse proxy is part of the app
 
@@ -110,3 +123,56 @@ Submit a small `import_path` task using a directory under Scratch and verify
 the NodeODX task UUID, status transitions, ODX artifacts, and cleanup. The
 acceptance record must include the NodeODX commit, ODX image/SIF digest, SIF
 path, Tapis job UUID, reverse-proxy port, and the absolute input path.
+
+## Shared submodel input (opt-in)
+
+`NODEODX_SHARED_SUBMODEL_V1=1` enables shared-image submodel submissions only
+with a rebuilt ODX-derived image containing `opendm.remote.SHARED_SUBMODEL_V1`.
+The launcher imports that module in the container before setting the engine
+capability marker. An old image fails startup when opt-in is requested; the
+default remains disabled. The current published 1.0.18 image has not been
+updated by these local source changes.
+
+The launcher maps `/var/www/data` to each child's host `runtime/data`, and
+passes the allocation root and Tapis job UUID into worker configuration.
+ClusterODX verifies the submitting token owns the parent task, then selects a
+capable worker from the same allocation. Workers independently validate the
+allocation identity and parent subtree. Seeds are read from the admin runtime;
+images can resolve through the allocation or explicit `NODEODX_SHARED_IMAGE_ROOTS`
+(colon-separated canonical roots, for example the authorized Corral media root).
+These roots are separate from ordinary `importPathRoots`: mounting Scratch or
+allowing ordinary image imports does not authorize other allocations for v1.
+
+Shared mode transfers image and seed path references rather than image bodies.
+Workers validate/copy the seed and copy source images into their own project
+before publishing the task. This avoids HTTP image transfers while preserving
+independent mutable task files; it still consumes shared-filesystem I/O and
+worker disk space. Result archives continue through the normal download path.
+The engine validates freshly downloaded stage outputs before marking a submodel
+complete. Older deployments retain the upload protocol; rejected shared paths
+or authorization do not silently downgrade to HTTP.
+
+Local checks (run from the indicated repositories):
+
+```bash
+# nodeodx-ls6
+python3 tools/test_nodeodx_capacity.py
+python3 tools/test_nodeodx_multinode.py
+# Requires the engine's pinned pyodm==1.5.12 and access to sibling checkouts:
+python3 tools/test_shared_submodel_protocol.py
+# NodeODX
+python3 -m unittest discover -s tests/shared_submodel
+node tests/shared_submodel/test_capability.js
+node tests/shared_submodel/test_cancellation.js
+# ODX
+python3 -m unittest tests.test_shared_submodel
+# ClusterODX
+npm test
+```
+
+Rollout requires building the updated ODX image, building NodeODX with that
+image as `FROM_REPO`, recording immutable image digests, and smoke-testing the
+actual engine import. Update the launcher image pin and rebuild the ZIP only
+after those checks. Publishing, updating Tapis, and running a small two-node
+acceptance job are separate deployment actions. A ZIP built against the old
+engine alone cannot enable this protocol.

@@ -233,6 +233,7 @@ class TaskManager{
     // Stops the execution of a task
     // (without removing it from the system).
     cancel(uuid, cb){
+        if (require('./sharedSubmodel').cancel(uuid, cb)) return;
         let task = this.find(uuid, cb);
         if (task){
             if (!task.isCanceled()){
@@ -250,6 +251,7 @@ class TaskManager{
     // Removes a task from the system.
     // Before being removed, the task is canceled.
     remove(uuid, cb){
+        if (require('./sharedSubmodel').cancel(uuid, cb)) return;
         this.cancel(uuid, err => {
             if (!err){
                 let task = this.find(uuid, cb);

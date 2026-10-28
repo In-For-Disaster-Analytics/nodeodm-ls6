@@ -776,3 +776,27 @@ _required_|true if the command succeeded, false otherwise|boolean
 
 
 
+
+== Shared submodels (optional v1 extension)
+
+When explicitly enabled with a compatible ODX engine and allocation configuration,
+`/info` includes `capabilities.shared_submodel_v1: true`. Ordinary `import_path`
+requests continue to mean an image directory.
+
+The v1 task form additionally carries `shared_submodel_version=1`, `seed_path`,
+`parent_task_uuid`, `attempt_id`, and trusted `shared_source_job_uuid` forwarded
+by ClusterODX. The task UUID must match `attempt_id`; `skipPostProcessing=true`
+and the requested `outputs` must match the seed manifest. The worker rejects
+allocation mismatches, seed traversal, escaping image references, invalid hashes,
+unsupported entries, and source paths outside the configured parent allocation.
+Seed limits are 100,000 entries, 8 GiB compressed, and 32 GiB expanded.
+
+Initialization creates an isolated project from validated seed files and copies
+shared source images into task-owned files. Cancelling/removing the known attempt
+UUID during initialization prevents later publication. Standard task lifecycle
+and result download routes remain in use. Disabled or old workers do not advertise
+v1. This extension requires an authenticated node; it is not enabled by mounting
+Scratch alone.
+
+V1 image access is limited to the allocation and explicit `sharedSubmodelImageRoots`;
+ordinary `importPathRoots` entries do not extend v1 authorization.

@@ -166,9 +166,19 @@ config.importPathRoots = combinedImportRoots.map(root => {
     }
 }).filter((root, index, roots) => roots.indexOf(root) === index);
 
+// V1 requires an allocation identity and a launcher-verified engine contract.
+config.sharedSubmodelV1 = process.env.NODEODX_SHARED_SUBMODEL_V1 === '1' || fromConfigFile("sharedSubmodelV1", false);
+config.sharedSubmodelEngineV1 = process.env.NODEODX_SHARED_SUBMODEL_ENGINE_V1 === '1';
+config.sharedSubmodelRoot = fromConfigFile("sharedSubmodelRoot", process.env.BASE_WORK_ROOT || '');
+config.sharedSubmodelJobUuid = fromConfigFile("sharedSubmodelJobUuid", process.env._tapisJobUUID || '');
+config.sharedSubmodelDataRoot = fromConfigFile("sharedSubmodelDataRoot", process.env.NODEODX_SHARED_SUBMODEL_DATA_ROOT || '');
+
 // Detect 7z availability
 config.has7z = spawnSync(apps.sevenZ, ['--help']).status === 0;
 config.hasUnzip = spawnSync(apps.unzip, ['--help']).status === 0;
 
+
+// V1 image authorization is narrower than ordinary image import visibility.
+config.sharedSubmodelImageRoots = fromConfigFile("sharedSubmodelImageRoots", []);
 
 module.exports = config;

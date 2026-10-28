@@ -784,7 +784,8 @@ app.get('/info', authCheck, (req, res) => {
             maxImages: config.maxImages,
             maxParallelTasks: config.parallelQueueProcessing,
             engineVersion,
-            engine
+            engine,
+            capabilities: { shared_submodel_v1: require('./libs/sharedSubmodel').enabled() }
         });
     });
 });

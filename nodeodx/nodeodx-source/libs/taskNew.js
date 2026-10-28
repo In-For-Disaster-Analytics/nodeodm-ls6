@@ -32,6 +32,7 @@ const request = require('request');
 const ziputils = require('./ziputils');
 const statusCodes = require('./statusCodes');
 const logger = require('./logger');
+const sharedSubmodel = require('./sharedSubmodel');
 
 const download = function(uri, filename, callback) {
     request.head(uri, function(err, res, body) {
@@ -310,7 +311,9 @@ module.exports = {
 
         let sharedImportPath = null;
         let useSharedImport = false;
-        if (rawImportPath){
+        const sharedV1 = req.body.shared_submodel_version !== undefined;
+        if (sharedV1 && req.body.shared_submodel_version !== '1') return die('Unsupported shared submodel version.');
+        if (rawImportPath && !sharedV1){
             const result = normalizeImportPath(rawImportPath);
             if (result.error){
                 if (hasUploadedFiles || hasZipUrl){
@@ -342,7 +345,9 @@ module.exports = {
         };
 
         let initSteps;
-        if (useSharedImport){
+        if (sharedV1){
+            initSteps = [];
+        }else if (useSharedImport){
             initSteps = [
                 cb => {
                     fs.stat(destPath, err => {
@@ -518,7 +523,7 @@ module.exports = {
             async.series([
                 cb => {
                     // Basic path check
-                    if (useSharedImport) cb();
+                    if (useSharedImport || sharedV1) cb();
                     else fs.exists(srcPath, exists => {
                             if (exists) cb();
                             else cb(new Error(`Invalid UUID`));
@@ -547,6 +552,16 @@ module.exports = {
                     }
                 },
                 cb => {
+                    if (sharedV1) sharedSubmodel.prepare(req, destPath, err => {
+                        if (err) return cb(err);
+                        fs.readdir(destPath + '.initializing/images', (readErr, images) => {
+                            if (!readErr) imagesCountEstimate = images.length;
+                            cb(readErr);
+                        });
+                    });
+                    else cb();
+                },
+                cb => {
                     const task = new Task(req.id, req.body.name, req.body.options,
                             req.body.webhook,
                             req.body.skipPostProcessing === 'true',
@@ -554,6 +569,13 @@ module.exports = {
                             req.body.dateCreated,
                             imagesCountEstimate
                         );
+                    if (sharedV1){
+                        try { sharedSubmodel.publish(req.id); }
+                        catch (error) {
+                            if (!sharedSubmodel.cancel(req.id, () => cb(error))) cb(error);
+                            return;
+                        }
+                    }
                     TaskManager.singleton().addNew(task);
                     res.json({ uuid: req.id });
                     cb();
@@ -570,7 +592,9 @@ module.exports = {
                     }, initSteps);
                 }
             ], err => {
-                if (err) die(err.message);
+                if (err){
+                    if (!sharedV1 || !sharedSubmodel.cancel(req.id, () => die(err.message))) die(err.message);
+                }
             });
         }
     }

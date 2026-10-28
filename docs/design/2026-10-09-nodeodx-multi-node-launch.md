@@ -57,7 +57,8 @@ the overlaid runtime could not resolve the production dependency `multer`.
    runtime trees, logs, and NodeODX data cannot race across hosts.
 6. Let each child obtain its own TAP port, establish its own reverse tunnels,
    and register its own endpoint. Registration includes child/host metadata
-   where supported, while retaining the existing `admin` role contract.
+   where supported. The first child is `admin`; subsequent children are `worker`
+   nodes, following the 2026-10-27 correction recorded below.
 7. The parent waits for every child and returns failure if any child fails.
 8. Keep the existing single-node path when the scheduler exposes one host or
    when the launcher is run outside Slurm.
@@ -158,6 +159,25 @@ multi-node registration or TAP port allocation fails, revert job submissions to
   regression.
 - The host enumeration uses portable `while read` logic instead of Bash
   `mapfile`, so local syntax/runtime checks also work on macOS Bash 3.2.
+
+### 2026-10-27 — Match NodeODM admin/worker registration
+
+- **Decision:** First host is admin; remaining hosts are ordinary workers.
+  Workers have distinct registration UUIDs and worker IDs. Preserve parent job
+  indices, unique ports/work roots, and the 64 simultaneous task default.
+- **Reason:** Registering all children as admin allowed only the first child to
+  claim the pending task and left no ordinary workers eligible for submodels.
+- **Alternatives rejected:** Changing the cluster's pending-task ownership or
+  making all managed admin nodes schedulable; reuse the existing worker contract.
+- **User feedback:** User requested NodeODM LS6 parity and approved the inline
+  implementation plan on 2026-10-27.
+- **Impact:** Update actual launcher, local simulated fan-out/payload tests and
+  operator docs. ClusterODX coordinator URL generation also honors local nginx
+  HTTPS forwarding to avoid POST-to-GET redirects. Explicit public address wins.
+- **Validation:** Local two/four-host fan-out, single-host/recursion guard, child
+  failure propagation, registration identities, and queue capacity checks.
+  Live LS6 two/four-node acceptance remains pending deployment.
+- **Lifecycle:** All children share one allocation; ending it stops all siblings.
 
 ## User feedback / decisions
 
