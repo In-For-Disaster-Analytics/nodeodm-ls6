@@ -130,8 +130,9 @@ path, Tapis job UUID, reverse-proxy port, and the absolute input path.
 with a rebuilt ODX-derived image containing `opendm.remote.SHARED_SUBMODEL_V1`.
 The launcher imports that module in the container before setting the engine
 capability marker. An old image fails startup when opt-in is requested; the
-default remains disabled. The current published 1.0.18 image has not been
-updated by these local source changes.
+deployed launcher now enables shared mode and pins the validated shared runtime
+image recorded in `PINNED-SOURCE`. Set `NODEODX_SHARED_SUBMODEL_V1=0` to
+disable it for rollback. The original 1.0.18 image tag remains unchanged.
 
 The launcher maps `/var/www/data` to each child's host `runtime/data`, and
 passes the allocation root and Tapis job UUID into worker configuration.
@@ -140,6 +141,7 @@ capable worker from the same allocation. Workers independently validate the
 allocation identity and parent subtree. Seeds are read from the admin runtime;
 images can resolve through the allocation or explicit `NODEODX_SHARED_IMAGE_ROOTS`
 (colon-separated canonical roots, for example the authorized Corral media root).
+The launcher defaults this explicit root to `/corral/utexas/BCS26030/webodm/media`.
 These roots are separate from ordinary `importPathRoots`: mounting Scratch or
 allowing ordinary image imports does not authorize other allocations for v1.
 

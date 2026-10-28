@@ -7,3 +7,10 @@ Version: 2.3.1
 The runtime image defaults to ghcr.io/in-for-disaster-analytics/nodeodx:1.0.18. Record its immutable OCI
 digest and the resulting SIF sha256 in the LS6 acceptance manifest before
 treating a run as a release candidate.
+
+Shared runtime release 2026-10-27:
+ODX engine commit: 0d8384a6 (complete Python runtime snapshot in odx-source)
+CPU runtime: ghcr.io/in-for-disaster-analytics/nodeodx@sha256:d50fd1aa77c505acea55ff98bcfdb221bb9e3b72f8cb6a70b5412628b276578d
+Build validation: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/40608805038
+Shared mode enabled by default; set NODEODX_SHARED_SUBMODEL_V1=0 to disable.
+Previous ZIP retained remotely as nodeodx-ls6.zip.pre-shared-20261027.
