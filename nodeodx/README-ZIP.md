@@ -203,3 +203,8 @@ their targets resolve within the same parent task. Archive members contain
 regular-file bytes; escaping links, broken links, nested directory links and
 special files are rejected. The 2026-10-28 image build validates 12 engine tests
 and 8 worker fixtures, plus direct `/code/run.sh --help` execution.
+
+The local split toolchain executes `/code/run.py` directly. Both `run.py` and
+`run.sh` are executable and invoked directly during image build validation.
+Final dense reconstruction, merge and asset delivery still require a full
+processing acceptance run; passing smoke tests does not establish those stages.

@@ -14,3 +14,8 @@ CPU runtime: ghcr.io/in-for-disaster-analytics/nodeodx@sha256:d50fd1aa77c505acea
 Build validation: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/40608805038
 Shared mode enabled by default; set NODEODX_SHARED_SUBMODEL_V1=0 to disable.
 Previous ZIP retained remotely as nodeodx-ls6.zip.pre-shared-20261027.
+
+Runtime correction 2026-10-28: bounded seed links and executable run.sh/run.py.
+Current CPU runtime: ghcr.io/in-for-disaster-analytics/nodeodx@sha256:32dc3afc2f26e423d36ed1571b71e1e83fe1504a903b8e73681e8034b7105191
+Build validation: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/40707296528
+Both entry points invoked directly with --help; 12 engine and 8 worker tests passed.
