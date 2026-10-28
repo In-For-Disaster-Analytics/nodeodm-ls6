@@ -60,7 +60,7 @@
     "opendm/report/overlap_color_map.txt": "94aff8420295f9ea3b7b7bedd9b3e14fab7e3f83753a052f279633d9e160fdb2",
     "opendm/report/overlap_diagram_legend.png": "408b15fb885c6f9b41ebb43214766ae7822bf524bc2320dc456d4677850ecd4a",
     "opendm/rollingshutter.py": "e5b073e0d9f933eee15ffd4c99bde928d699500f710cd19e55762ea92438b03d",
-    "opendm/shared_submodel.py": "c0ba4cb19ac42de072e9d9464bd09f5af90b7908d7ea56f49b99959da5e07fde",
+    "opendm/shared_submodel.py": "187b6a37ffac5d1615c22f04e7e33fd1d347394797e81ed1dbefe28a941f83b0",
     "opendm/shots.py": "b11f35abe5007012dc58e09b88c147859b0a7739a48a3af9ba0805f171eb5625",
     "opendm/skyremoval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "opendm/skyremoval/guidedfilter.py": "754ea0e538d4b191d7c3b067612de90a3ff608d15dba83284716b352cce85967",
@@ -101,6 +101,7 @@
     "stages/openmvs.py": "0a823f6affce8c289a757adc16ac6996da11a8c2a53c949e1ecb20ea629d0b2a",
     "stages/run_opensfm.py": "acca75b4661453434660114e61afc225e3c52124214b1372faf509107974a1df",
     "stages/splitmerge.py": "fa7529a163457381b1964f1582353c2c0110a9435f44992bcde0ab5edf78ccaf",
-    "tests/test_shared_submodel.py": "7f6c0d73a6687ccfba4e2071e8b571c6ba7a3903bacfa03287033ca44af6d0bb"
-  }
+    "tests/test_shared_submodel.py": "8e14380808d499a8fca7e577740c3e8d21f9f9781dfd47bb9f61054b3acc07ef"
+  },
+  "overlay_notes": "2026-10-28: bounded parent-task seed links supported; nofollow anchored opens preserve regular-file archive contract. Base commit unchanged; modified source hashes below identify overlay."
 }

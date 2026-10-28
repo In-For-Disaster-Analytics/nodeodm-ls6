@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 import shutil
 import stat
 import tempfile
@@ -30,6 +31,45 @@ def translate(path):
     raise ValueError('Shared submodel path is outside configured data root')
 
 
+def _seed_member(relative):
+    if (not isinstance(relative, str) or not relative or relative.startswith('/') or
+            any(part in ('', '.', '..') for part in relative.split('/')) or
+            '\\' in relative or '\x00' in relative or relative == 'shared_submodel.json'):
+        raise ValueError('Invalid seed archive member')
+    return relative
+
+
+def _seed_walk_error(error):
+    raise error
+
+
+def _resolve_seed(path, task_root):
+    resolved = str(Path(path).resolve(strict=True))
+    if os.path.commonpath([task_root, resolved]) != task_root:
+        raise ValueError('Seed input escapes parent task')
+    return resolved
+
+
+def _open_seed(path, task_root, root_fd):
+    resolved = _resolve_seed(path, task_root)
+    parts = os.path.relpath(resolved, task_root).split(os.sep)
+    directory = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     dir_fd=directory)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise ValueError('Seed inputs must be regular files')
+        return fd
+    finally:
+        os.close(directory)
+
+
 def snapshot(project, stage, seed_files, markers, outputs):
     """Create an exclusive immutable archive; hash the exact bytes written."""
     project = os.path.abspath(project)
@@ -39,6 +79,11 @@ def snapshot(project, stage, seed_files, markers, outputs):
     if len(parts) < 3 or parts[1] != 'submodels':
         raise ValueError('Shared submodel must belong to a parent task submodels directory')
     parent = str(uuid.UUID(parts[0]))
+    task_root = os.path.realpath(os.path.dirname(os.path.dirname(project)))
+    if os.path.basename(task_root) != parent:
+        raise ValueError('Parent task directory must match task UUID')
+    for name in list(seed_files) + list(markers):
+        _seed_member(name)
     if not os.path.isdir(os.path.join(project, 'images')):
         raise ValueError('Shared submodel images directory is missing')
     attempt = str(uuid.uuid4())
@@ -47,23 +92,25 @@ def snapshot(project, stage, seed_files, markers, outputs):
     members = []
     for relative in list(seed_files) + ['gcp_list.txt', 'geo.txt']:
         source = os.path.join(project, relative)
-        if not os.path.exists(source):
+        if not os.path.lexists(source):
             continue
-        if os.path.isdir(source):
-            for root, dirs, names in os.walk(source, followlinks=False):
+        resolved = _resolve_seed(source, task_root)
+        if os.path.isdir(resolved):
+            for root, dirs, names in os.walk(resolved, followlinks=False, onerror=_seed_walk_error):
                 if any(os.path.islink(os.path.join(root, d)) for d in dirs):
                     raise ValueError('Seed directories cannot contain symlinks')
-                members.extend(os.path.relpath(os.path.join(root, n), project) for n in names)
+                members.extend(os.path.join(relative, os.path.relpath(os.path.join(root, n), resolved)) for n in names)
         else:
             members.append(relative)
     if len(set(markers)) != len(markers) or set(markers).intersection(members):
         raise ValueError('Seed markers conflict with seed files')
+    root_fd = os.open(task_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for relative in sorted(set(members)):
                 path = os.path.join(project, relative)
-                # Reject all seed symlinks and special files, including a replaced file.
-                fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                # Copy bounded link targets as regular bytes; reject replacement links.
+                fd = _open_seed(path, task_root, root_fd)
                 with os.fdopen(fd, 'rb') as src:
                     if not stat.S_ISREG(os.fstat(src.fileno()).st_mode):
                         raise ValueError('Seed inputs must be regular files')
@@ -89,6 +136,8 @@ def snapshot(project, stage, seed_files, markers, outputs):
         if os.path.exists(archive):
             os.unlink(archive)
         raise
+    finally:
+        os.close(root_fd)
     return archive, {
         'shared_submodel_version': '1', 'attempt_id': attempt,
         'parent_task_uuid': parent, 'import_path': translate(os.path.join(project, 'images')),
@@ -144,7 +193,7 @@ def restore(task, project, stage, outputs, options, progress_callback):
                 raise ValueError('Missing fresh shared submodel result: %s' % relative)
         for relative in outputs:
             source = os.path.join(staging, relative)
-            if not os.path.exists(source):
+            if not os.path.lexists(source):
                 continue
             destination = os.path.join(project, relative)
             for root in (staging, project):
