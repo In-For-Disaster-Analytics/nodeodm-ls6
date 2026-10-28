@@ -1,0 +1,93 @@
+---
+# A list of global configuration variables
+# Uncomment lines as needed to edit default settings.
+# Note this only works for settings with default values. Some commands like --rerun <module>
+# still need to be set on the command line when needed.
+
+# This line is really important to set up properly
+# For docker builds, this should be "/" (or docker-compose won't work)
+project_path: '/' # Example: '/home/user/projects'
+
+# The rest of the settings will default to the values set unless you uncomment and change them
+#end_with: 'odm_postprocess'
+#rerun_all: False
+#min_num_features: 10000
+#feature_type: 'dspsift'
+#feature_quality: 'high'
+#matcher_type: 'flann'
+#matcher_neighbors: 0
+#matcher_order: 0
+#use_fixed_camera_params: False
+#camera_lens: 'auto'
+#radiometric_calibration: 'none'
+#use_hybrid_bundle_adjustment: False
+#max_concurrency: 4 # by default this is set to $(nproc)
+#sfm_algorithm: 'incremental'
+#sfm_no_partial: False
+#sky_removal: False
+#bg_removal: False
+#use_3dmesh: False
+#skip_3dmodel: False
+#skip_report: False
+#skip_orthophoto: False
+#ignore_gsd: False
+#no_gpu: False
+#mesh_size: 200000
+#mesh_octree_depth: 11
+#fast_orthophoto: False
+#crop: 3
+#boundary: ''
+#auto_boundary: False
+#auto_boundary_distance: 0
+#pc_quality: 'medium'
+#pc_classify: False
+#pc_csv: False
+#pc_las: False
+#pc_ept: False
+#pc_copc: False
+#pc_filter: 5
+#pc_sample: 0
+#pc_skip_geometric: False
+#smrf_scalar: 1.25
+#smrf_slope: 0.15
+#smrf_threshold: 0.5
+#smrf_window: 18.0
+#texturing_skip_global_seam_leveling: False
+#texturing_keep_unseen_faces: False
+#texturing_single_material: False
+#gltf: False
+#gcp: !!null  # YAML tag for None
+#geo: !!null  # YAML tag for None
+#align: !!null  # YAML tag for None
+#use_exif: False # Set to True if you have a GCP file (it auto-detects) and want to use EXIF
+#dtm: False      # Use this tag to build a DTM (Digital Terrain Model)
+#dsm: False      # Use this tag to build a DSM (Digital Surface Model)
+#dem_gapfill_steps: 3
+#dem_resolution: 5 # cm/pixel
+#dem_decimation: 1
+#dem_euclidean_map: False
+#orthophoto_resolution: 5.0 # cm/pixel
+#orthophoto_no_tiled: False
+#orthophoto_png: False
+#orthophoto_kmz: False
+#orthophoto_compression: DEFLATE # Options are [JPEG, LZW, PACKBITS, DEFLATE, LZMA, NONE] Don't change unless you know what you are doing
+#orthophoto_cutline: False
+#tiles: False
+#build_overviews: False
+#cog: False
+#rolling_shutter: False
+#rolling_shutter_readout: 0
+#video_limit: 500
+#video_resolution: 4000
+#split: 999999
+#split_overlap: 150
+#split_image_groups: !!null
+#sm_no_align: False
+#sm_cluster: !!null
+#merge: 'all'
+#force_gps: False
+#gps_accuracy: 3
+#gps_z_offset: 0
+#optimize_disk_space: False
+#primary_band: 'auto'
+#skip_band_alignment: False

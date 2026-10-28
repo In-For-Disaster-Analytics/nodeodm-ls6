@@ -1,0 +1,8 @@
+**/.git
+**/node_modules
+**/__pycache__
+**/*.pyc
+nodeodx-source/data
+nodeodx-source/tmp
+nodeodx-source/logs
+*.zip

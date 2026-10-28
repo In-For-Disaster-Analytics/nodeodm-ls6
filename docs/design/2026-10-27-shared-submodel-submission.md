@@ -168,3 +168,20 @@ Proposed sequence, requiring approval: finish reviews and unresolved auth/runtim
 - **Limit:** Docker Desktop is paused; container image and live two-host LS6
   processing acceptance have not run. Mode remains off by default; no publication,
   commits, deployment or live task changes are authorized/performed for this work.
+
+### 2026-10-27 — Owned repository runtime release
+
+- **User feedback:** User requested deploying NodeODX and fixing disabled shared mode.
+- **Decision:** Build a versioned source-overlay runtime in the existing owned
+  release repository, without attempting the read-only upstream ODX push.
+- **Provenance:** `nodeodx/odx-source/SOURCE.json` records approved ODX commit
+  0d8384a6, source hashes, and immutable existing native-tool image digest.
+  Native binaries/dependencies are reused; the entire Python engine runtime and
+  NodeODX source are replaced together and validated inside the final image.
+- **Validation:** Source hashes, actual imported module paths, PyODM 1.5.12,
+  engine/worker/cancellation fixtures and Node dependencies are build gates.
+- **Limit:** A native photogrammetry two-host acceptance run remains distinct
+  from these protocol checks. Existing workers retain their running image.
+- **Rollout:** Publish a separate versioned tag, pin its digest in the launcher,
+  preserve prior ZIP, enable the guarded mode and explicit Corral image roots,
+  upload package only after image checks succeed. No upstream write required.
