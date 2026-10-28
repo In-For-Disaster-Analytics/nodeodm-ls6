@@ -5,6 +5,12 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      runtime:
+        description: Runtime build variant
+        type: choice
+        options: [standard, shared]
+        default: standard
 
 jobs:
   build:
@@ -46,6 +52,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push CPU image
+        if: inputs.runtime != 'shared'
         uses: docker/build-push-action@v6
         with:
           context: ./nodeodx/nodeodx-source
@@ -56,3 +63,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=nodeodx-cpu
           cache-to: type=gha,mode=max,scope=nodeodx-cpu
+
+      - name: Build and validate shared runtime
+        if: inputs.runtime == 'shared'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./nodeodx
+          file: ./nodeodx/shared-runtime.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/in-for-disaster-analytics/nodeodx:shared-0d8384a6
+          cache-from: type=gha,scope=nodeodx-shared
+          cache-to: type=gha,mode=max,scope=nodeodx-shared
