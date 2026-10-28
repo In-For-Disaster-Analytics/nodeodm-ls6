@@ -67,6 +67,70 @@ sys.exit(9 if host == os.environ.get('TEST_FAILED_HOST') else 0)
         self.assertEqual(result.returncode, 9)
         self.assertEqual(len(records), 2)
 
+    def test_secret_mode_and_cleanup(self):
+        start = SOURCE.index('REGISTRATION_ACCESS_TOKEN=')
+        end = SOURCE.index('NODEODX_CLEANUP_TASKS_AFTER=', start)
+        helpers = SOURCE[start:end]
+        cleanup = SOURCE[SOURCE.index('deregister_node()'):SOURCE.index('cleanup()')]
+        for secret in ['', 'fixture-secret-unique']:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / 'request.json'
+                env = dict(os.environ, TAPIS_ACCESS_TOKEN='expired-bearer',
+                           NODEODX_REGISTRATION_SECRET=secret, TEST_REQUEST=str(output),
+                           REGISTERED_HOST='worker', REGISTERED_PORT='3000',
+                           REGISTERED_NODE_ID='2', REGISTERED_REGISTRATION_UUID='job',
+                           CLUSTER_URL='https://cluster.example')
+                script = helpers + cleanup + '''
+                curl() { python3 -c 'import json,os,sys; json.dump({"args":sys.argv[1:],"body":json.load(sys.stdin)},open(os.environ["TEST_REQUEST"],"w"))' "$@"; }
+                deregister_node
+                printf '%s' "$REGISTRATION_ACCESS_TOKEN"
+'''
+                result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                request = json.loads(output.read_text())
+                self.assertEqual(request['body']['nodeId'], 2)
+                self.assertEqual(request['body'].get('registrationSecret', ''), secret)
+                if secret:
+                    self.assertEqual(result.stdout, '')
+                    self.assertNotIn('expired-bearer', ' '.join(request['args']))
+                    self.assertNotIn(secret, ' '.join(request['args']))
+                else:
+                    self.assertEqual(result.stdout, 'expired-bearer')
+                    self.assertIn('Authorization: Bearer expired-bearer', request['args'])
+
+    def test_registration_failure_keeps_secret_out_of_retry_artifacts(self):
+        helpers = SOURCE[SOURCE.index('REGISTRATION_ACCESS_TOKEN='):SOURCE.index('NODEODX_CLEANUP_TASKS_AFTER=')]
+        registration = SOURCE[SOURCE.index('if [[ -n "$REGISTERED_HOST" ]]; then'):SOURCE.index('cat > "$WORK_ROOT/connection_info.txt"')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            curl = root / 'curl'
+            curl.write_text(f'#!{sys.executable}\n' + '''import json,os,pathlib,sys
+args=sys.argv[1:]
+body=json.load(sys.stdin)
+pathlib.Path(os.environ['TEST_REQUEST']).write_text(json.dumps({'body':body,'args':args}))
+pathlib.Path(args[args.index('-o')+1]).write_text('{"error":"fixture rejection"}')
+print('401',end='')
+''')
+            curl.chmod(0o755)
+            secret = 'fixture-secret-that-must-stay-out-of-logs'
+            env = dict(os.environ, PATH=f'{root}:{os.environ["PATH"]}', WORK_ROOT=directory,
+                       TEST_REQUEST=str(root / 'request.json'), NODEODX_REGISTRATION_SECRET=secret,
+                       TAPIS_ACCESS_TOKEN='expired-bearer', REGISTERED_HOST='worker', REGISTERED_PORT='60000',
+                       _tapisJobUUID='example-job-007', JOB_ID='fixture', USER='tester', NODE_TOKEN='node-token',
+                       NODEODX_ROLE='admin', NODEODX_WORKER_ID='0', NODEODX_CHILD_INDEX='1-admin',
+                       NODEODX_HOST_INDEX='1', NODEODX_JOB_INDEX='1', NODEODX_JOB_COUNT='1',
+                       NODEODX_REQUIRE_REGISTRATION='0', CLUSTER_URL='https://cluster.example')
+            script = 'log() { printf "%s\\n" "$*"; }\n' + helpers + registration
+            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            request = json.loads((root / 'request.json').read_text())
+            self.assertEqual(request['body']['registrationSecret'], secret)
+            self.assertNotIn('expired-bearer', ' '.join(request['args']))
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            saved = json.loads((root / 'registration-payload.json').read_text())
+            self.assertNotIn('registrationSecret', saved)
+            self.assertIn('os.environ["NODEODX_REGISTRATION_SECRET"]', result.stdout)
+
     def test_registration_roles_and_identity(self):
         start = SOURCE.index('    REGISTRATION_UUID="${_tapisJobUUID:')
         end = SOURCE.index('    REGISTRATION_RESPONSE_FILE=', start)

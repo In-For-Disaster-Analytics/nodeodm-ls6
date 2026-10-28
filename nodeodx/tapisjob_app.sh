@@ -146,6 +146,15 @@ NODEODX_IMAGE="${NODEODX_IMAGE:-ghcr.io/in-for-disaster-analytics/nodeodx@sha256
 NODEODX_IMPORT_PATH_ROOTS="${NODEODX_IMPORT_PATH_ROOTS:-$JOB_DIR}"
 NODE_TOKEN="${NODEODX_NODE_TOKEN:-${_tapisJobOwner:-nodeodx-${USER:-unknown}}}"
 REGISTRATION_ACCESS_TOKEN="${TAPIS_ACCESS_TOKEN:-${_tapisAccessToken:-}}"
+export NODEODX_REGISTRATION_SECRET="${NODEODX_REGISTRATION_SECRET:-}"
+# Select one credential explicitly; expired bearers must not override secret mode.
+if [[ -n "$NODEODX_REGISTRATION_SECRET" ]]; then
+    REGISTRATION_ACCESS_TOKEN=""
+fi
+
+registration_request_payload() {
+    python3 -c 'import json, os, sys; p=json.load(sys.stdin); secret=os.environ.get("NODEODX_REGISTRATION_SECRET"); p.update({"registrationSecret": secret} if secret else {}); print(json.dumps(p))'
+}
 NODEODX_CLEANUP_TASKS_AFTER="${NODEODX_CLEANUP_TASKS_AFTER:-0}"
 # Keep the NodeODX service alive when ClusterODM registration is unavailable so
 # the Tapis job can be inspected and the registration path can be retried or
@@ -312,7 +321,7 @@ PY
     if [[ -n "$REGISTRATION_ACCESS_TOKEN" ]]; then
         deregister_curl_args+=(-H "Authorization: Bearer ${REGISTRATION_ACCESS_TOKEN}")
     fi
-    curl "${deregister_curl_args[@]}" --data "$payload" \
+    registration_request_payload <<< "$payload" | curl "${deregister_curl_args[@]}" --data-binary @- \
         "$CLUSTER_URL/webhook/deregister-node" >/dev/null || true
 }
 
@@ -513,11 +522,11 @@ PY
     fi
     REGISTRATION_HTTP_CODE=""
     REGISTRATION_CURL_STATUS=0
-    REGISTRATION_HTTP_CODE="$(curl "${CURL_ARGS[@]}" \
+    REGISTRATION_HTTP_CODE="$(registration_request_payload <<< "$REGISTRATION_PAYLOAD" | curl "${CURL_ARGS[@]}" \
         -D "$REGISTRATION_HEADERS_FILE" \
         -o "$REGISTRATION_RESPONSE_FILE" \
         -w '%{http_code}' \
-        --data "$REGISTRATION_PAYLOAD" \
+        --data-binary @- \
         "$CLUSTER_URL/webhook/register-node" 2>/dev/null)" || REGISTRATION_CURL_STATUS=$?
     REGISTRATION_RESPONSE="$(cat "$REGISTRATION_RESPONSE_FILE" 2>/dev/null || true)"
     if [[ "$REGISTRATION_RESPONSE" == *'"success":true'* ]]; then
@@ -528,8 +537,11 @@ PY
         printf '%s\n' "$REGISTRATION_PAYLOAD" > "$REGISTRATION_PAYLOAD_FILE"
         chmod 600 "$REGISTRATION_PAYLOAD_FILE"
         MANUAL_REGISTRATION_CURL="curl --noproxy '*' -sS -i --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json' -H \"Authorization: Bearer \$TAPIS_ACCESS_TOKEN\" --data-binary @$REGISTRATION_PAYLOAD_FILE \"$CLUSTER_URL/webhook/register-node\""
+        if [[ -n "$NODEODX_REGISTRATION_SECRET" ]]; then
+            MANUAL_REGISTRATION_CURL="python3 -c 'import json,os,sys; p=json.load(sys.stdin); p[\"registrationSecret\"]=os.environ[\"NODEODX_REGISTRATION_SECRET\"]; print(json.dumps(p))' < $REGISTRATION_PAYLOAD_FILE | curl --noproxy '*' -sS -i --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json' --data-binary @- \"$CLUSTER_URL/webhook/register-node\""
+        fi
         log "WARNING: ClusterODX registration did not succeed (http_status=${REGISTRATION_HTTP_CODE:-unknown}, curl_status=$REGISTRATION_CURL_STATUS, endpoint=$CLUSTER_URL/webhook/register-node)"
-        log "manual registration curl (export TAPIS_ACCESS_TOKEN first): $MANUAL_REGISTRATION_CURL"
+        log "manual registration curl (export the selected credential first): $MANUAL_REGISTRATION_CURL"
         if [[ -n "$REGISTRATION_RESPONSE" ]]; then
             REGISTRATION_RESPONSE_SUMMARY="$(python3 - "$REGISTRATION_RESPONSE_FILE" <<'PY'
 import json

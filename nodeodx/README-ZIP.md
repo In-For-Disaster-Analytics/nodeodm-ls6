@@ -178,3 +178,18 @@ actual engine import. Update the launcher image pin and rebuild the ZIP only
 after those checks. Publishing, updating Tapis, and running a small two-node
 acceptance job are separate deployment actions. A ZIP built against the old
 engine alone cannot enable this protocol.
+
+### Shared-secret registration
+
+The launcher accepts `NODEODX_REGISTRATION_SECRET`. When nonempty, it sends the
+secret in registration and deregistration JSON and omits the Tapis bearer,
+including when `TAPIS_ACCESS_TOKEN` is present but expired. The secret is added
+only to the streamed HTTP request, not the saved `registration-payload.json`.
+The printed manual retry command reads the secret from the environment. Do not paste secret values into logs.
+
+ClusterODX can inject this environment variable when ASR
+`worker.allowSharedSecretPrimaryRegistration` is `true` and a registration
+secret is configured. This is a trusted-cluster opt-in: job owners receive a
+cluster-wide credential. Primary registration must exactly match a pending
+Tapis job with recorded ownership. This mode does not refresh the Tapis token
+or repair expired-token cancellation. See `ClusterODX/docs/tapis.md` for setup.
