@@ -1,7 +1,7 @@
 # Bounded shared-submodel seed links
 
 ## Status
-Approved — user explicitly requested implementation and runtime deployment on 2026-10-28; review accepted; implementing.
+Implemented — reviewed, tested and approved for deployment on 2026-10-28.
 
 ## Objective
 Support legitimate linked seed inputs created during ODX splitting.
@@ -45,6 +45,9 @@ None blocking; review required to confirm bounded link handling.
 ## Decisions
 - Security/design review accepted bounded resolution with anchored nofollow opens, safe member names, nonblocking regular-file checks and explicit adversarial tests. Concurrent ancestor-directory renames by the trusted same-user task owner remain outside this symlink threat model.
 - 2026-10-28: User approved fix and runtime deployment. Preserve the parent-task boundary and immutable archive contract.
+
+- 2026-10-28: QA accepted implementation; added NUL-member rejection and fail-closed os.walk error handling. Owned overlay hashes verified. Local tests: 12 engine, 6 launcher, 4 capacity passed. GitHub build 40697177566 passed direct run.sh execution, 12 engine tests and 8 worker fixtures. Published image digest sha256:be2990c8fb3484145a2bc690993703517854f7767ca50620dd5791cf556187b9. Existing upstream ODX checkout unchanged; overlay manifest records modified hashes.
+- Rollout uses existing app 1.0.18 package URI; prior ZIP retained as nodeodx-ls6.zip.pre-seed-links-20261028. Existing jobs untouched; no live photogrammetry task submitted during validation.
 
 ## User feedback / decisions
 User: “ok do it” after bounded-link fix and rebuild/deployment were described.

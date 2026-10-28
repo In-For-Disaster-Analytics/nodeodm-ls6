@@ -197,3 +197,9 @@ or repair expired-token cancellation. See `ClusterODX/docs/tapis.md` for setup.
 The 2026-10-28 runtime image corrects `/code/run.sh` execute permissions. Image
 builds now verify `test -x /code/run.sh` and invoke `/code/run.sh --help` directly
 before publishing, matching NodeODX process startup.
+
+Shared seed snapshots support file links and seed-directory root links only when
+their targets resolve within the same parent task. Archive members contain
+regular-file bytes; escaping links, broken links, nested directory links and
+special files are rejected. The 2026-10-28 image build validates 12 engine tests
+and 8 worker fixtures, plus direct `/code/run.sh --help` execution.
