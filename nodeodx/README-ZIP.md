@@ -193,3 +193,7 @@ secret is configured. This is a trusted-cluster opt-in: job owners receive a
 cluster-wide credential. Primary registration must exactly match a pending
 Tapis job with recorded ownership. This mode does not refresh the Tapis token
 or repair expired-token cancellation. See `ClusterODX/docs/tapis.md` for setup.
+
+The 2026-10-28 runtime image corrects `/code/run.sh` execute permissions. Image
+builds now verify `test -x /code/run.sh` and invoke `/code/run.sh --help` directly
+before publishing, matching NodeODX process startup.
