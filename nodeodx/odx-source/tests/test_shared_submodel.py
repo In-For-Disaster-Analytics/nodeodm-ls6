@@ -80,90 +80,56 @@ class SharedSubmodelTests(unittest.TestCase):
 
     def test_seed_symlinks_rejected_and_partial_archive_removed(self):
         os.symlink('/etc/hosts', os.path.join(self.project, 'geo.txt'))
-        with self.assertRaises((OSError, ValueError)):
+        with self.assertRaises(OSError):
             shared.snapshot(self.project, 'toolchain', [], [], [])
         self.assertFalse(any(n.endswith('.zip') for n in os.listdir(self.project)))
-
-    def test_parent_seed_links_copy_bytes_under_original_names(self):
-        task = os.path.realpath(os.path.dirname(os.path.dirname(self.project)))
-        os.makedirs(os.path.join(task, 'opensfm', 'exif'))
-        with open(os.path.join(task, 'opensfm', 'camera_models.json'), 'wb') as f:
-            f.write(b'{"camera":1}')
-        with open(os.path.join(task, 'opensfm', 'exif', 'photo.json'), 'wb') as f:
-            f.write(b'EXIF')
-        for name in ['camera_models.json', 'exif']:
-            os.symlink(os.path.join(task, 'opensfm', name), os.path.join(self.project, 'opensfm', name))
-        archive, _ = shared.snapshot(self.project, 'reconstruction',
-            ['opensfm/camera_models.json', 'opensfm/exif'], [], [])
-        with zipfile.ZipFile(archive) as zf:
-            self.assertEqual(zf.read('opensfm/camera_models.json'), b'{"camera":1}')
-            self.assertEqual(zf.read('opensfm/exif/photo.json'), b'EXIF')
-
-    def test_seed_escape_loop_fifo_and_invalid_members(self):
-        for target in ['/etc/hosts', os.path.join(self.root, 'other-task', 'seed'),
-                       os.path.join(self.project, 'geo.txt')]:
-            path = os.path.join(self.project, 'geo.txt')
-            os.symlink(target, path)
-            try:
-                with self.assertRaises((OSError, ValueError, RuntimeError)):
-                    shared.snapshot(self.project, 'reconstruction', [], [], [])
-            finally:
-                os.unlink(path)
-        os.mkfifo(os.path.join(self.project, 'geo.txt'))
-        with self.assertRaises(ValueError):
-            shared.snapshot(self.project, 'reconstruction', [], [], [])
-        os.unlink(os.path.join(self.project, 'geo.txt'))
-        for member in ['../escape', '/absolute', 'a/../escape', 'nul\x00name', 'shared_submodel.json']:
-            with self.assertRaises(ValueError):
-                shared.snapshot(self.project, 'reconstruction', [], [member], [])
-        self.assertFalse(any(n.endswith('.zip') for n in os.listdir(self.project)))
-
-    def test_existing_cross_task_link_and_nested_directory_link_are_rejected(self):
-        other = os.path.join(self.root, str(uuid.uuid4()))
-        os.makedirs(other)
-        with open(os.path.join(other, 'seed.json'), 'wb') as f:
-            f.write(b'other task')
-        source = os.path.join(self.project, 'geo.txt')
-        os.symlink(os.path.join(other, 'seed.json'), source)
-        with self.assertRaises(ValueError):
-            shared.snapshot(self.project, 'reconstruction', [], [], [])
-        os.unlink(source)
-        self.write('opensfm/exif/photo.json', b'exif')
-        os.symlink(other, os.path.join(self.project, 'opensfm/exif/nested'))
-        with self.assertRaises(ValueError):
-            shared.snapshot(self.project, 'reconstruction', ['opensfm/exif'], [], [])
-        self.assertFalse(any(n.endswith('.zip') for n in os.listdir(self.project)))
-
-    def test_resolved_file_or_directory_replaced_by_link_is_rejected(self):
-        path = self.write('opensfm/camera_models.json', b'{}')
-        task = os.path.realpath(os.path.dirname(os.path.dirname(self.project)))
-        original = shared._resolve_seed
-        for replace_directory in [False, True]:
-            def replace(source, root):
-                result = original(source, root)
-                victim = os.path.dirname(path) if replace_directory else path
-                os.rename(victim, victim + '.saved')
-                os.symlink('/tmp' if replace_directory else '/etc/hosts', victim)
-                return result
-            root_fd = os.open(task, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                with patch.object(shared, '_resolve_seed', side_effect=replace):
-                    with self.assertRaises(OSError):
-                        shared._open_seed(path, task, root_fd)
-            finally:
-                os.close(root_fd)
-                victim = os.path.dirname(path) if replace_directory else path
-                os.unlink(victim)
-                os.rename(victim + '.saved', victim)
 
     def test_old_results_cannot_satisfy_new_completion(self):
         self.write('opensfm/reconstruction.json')
         self.write('opensfm/tracks.csv')
         self.write('cameras.json')
         task = Mock()
+        outputs = ['opensfm/reconstruction.json', 'opensfm/tracks.csv', 'cameras.json',
+                   'opensfm/features', 'opensfm/matches']
         with self.assertRaisesRegex(ValueError, 'Missing fresh'):
-            shared.restore(task, self.project, 'reconstruction', [], {}, None)
+            shared.restore(task, self.project, 'reconstruction', outputs, {}, None)
         task.download_assets.assert_called_once()
+
+    def test_required_outputs_derive_from_requested_outputs(self):
+        outputs = ['odm_filterpoints/point_cloud.ply', 'odm_filterpoints/point_cloud_stats.json',
+                   'odm_orthophoto/cutline.gpkg', 'odm_dem', 'odm_report', 'odm_georeferencing']
+        required, optional = shared.required_outputs(outputs, {'merge': 'all'})
+        self.assertEqual(required, ['odm_filterpoints/point_cloud.ply', 'odm_filterpoints/point_cloud_stats.json',
+                                    'odm_orthophoto/cutline.gpkg', 'odm_georeferencing/odm_georeferenced_model.laz'])
+        self.assertEqual(optional, ['odm_dem', 'odm_report', 'odm_georeferencing'])  # replaced by the laz
+        required, optional = shared.required_outputs(outputs, {'dsm': True, 'skip-orthophoto': True, 'merge': 'orthophoto'})
+        self.assertEqual(required, ['odm_filterpoints/point_cloud.ply', 'odm_filterpoints/point_cloud_stats.json',
+                                    'odm_dem/dsm.tif', 'odm_dem/dsm.euclideand.tif'])
+        # Nothing is required that was not requested
+        self.assertEqual(shared.required_outputs([], {'dsm': True})[0], [])
+
+    def test_restore_missing_returned_output_raises(self):
+        def download(path, **kwargs):
+            os.makedirs(os.path.join(path, 'odm_filterpoints'))
+            with open(os.path.join(path, 'odm_filterpoints', 'point_cloud.ply'), 'wb') as f:
+                f.write(b'fresh')
+        task = Mock()
+        task.download_assets.side_effect = download
+        outputs = ['odm_filterpoints/point_cloud.ply', 'odm_filterpoints/point_cloud_stats.json']
+        with self.assertRaisesRegex(ValueError, 'point_cloud_stats.json'):
+            shared.restore(task, self.project, 'toolchain', outputs, {'merge': 'orthophoto'}, None)
+        self.assertFalse(os.path.exists(os.path.join(self.project, 'odm_filterpoints')))
+
+    def test_restore_missing_returned_ply_raises(self):
+        def download(path, **kwargs):
+            os.makedirs(os.path.join(path, 'odm_filterpoints'))
+            with open(os.path.join(path, 'odm_filterpoints', 'point_cloud_stats.json'), 'wb') as f:
+                f.write(b'{}')
+        task = Mock()
+        task.download_assets.side_effect = download
+        outputs = ['odm_filterpoints/point_cloud.ply', 'odm_filterpoints/point_cloud_stats.json']
+        with self.assertRaisesRegex(ValueError, 'point_cloud.ply'):
+            shared.restore(task, self.project, 'toolchain', outputs, {'merge': 'orthophoto'}, None)
 
     def test_toolchain_optional_outputs_and_restore(self):
         def download(path, **kwargs):

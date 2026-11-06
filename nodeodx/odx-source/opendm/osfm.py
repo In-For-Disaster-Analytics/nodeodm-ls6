@@ -637,6 +637,7 @@ def get_submodel_argv(args, submodels_path = None, submodel_name = None):
     :return the same as argv, but removing references to --split, 
         setting/replacing --project-path and name
         removing --rerun-from, --rerun, --rerun-all, --sm-cluster
+        replacing the internal --submodel-rerun-from <stage> with --rerun-from <stage> (when set)
         removing --pc-las, --pc-csv, --pc-ept, --tiles flags (processing these is wasteful)
         adding --orthophoto-cutline
         adding --dem-euclidean-map
@@ -647,7 +648,7 @@ def get_submodel_argv(args, submodels_path = None, submodel_name = None):
         reading the contents of --boundary
     """
     assure_always = ['orthophoto_cutline', 'dem_euclidean_map', 'skip_3dmodel', 'skip_report']
-    remove_always = ['split', 'split_overlap', 'rerun_from', 'rerun', 'gcp', 'end_with', 'sm_cluster', 'rerun_all', 'pc_csv', 'pc_las', 'pc_ept', 'tiles', 'copy-to', 'cog']
+    remove_always = ['split', 'split_overlap', 'rerun_from', 'rerun', 'gcp', 'end_with', 'sm_cluster', 'rerun_all', 'pc_csv', 'pc_las', 'pc_ept', 'tiles', 'copy-to', 'cog', 'submodel_rerun_from']
     read_json_always = ['cameras', 'boundary']
 
     argv = sys.argv
@@ -711,6 +712,12 @@ def get_submodel_argv(args, submodels_path = None, submodel_name = None):
         
         result.append(str(args_dict[k]))
     
+    # Internal split-project re-run: submodels re-run from this stage
+    submodel_rerun_from = args_dict.get("submodel_rerun_from")
+    if submodel_rerun_from:
+        result.append("--rerun-from")
+        result.append(submodel_rerun_from)
+
     if submodels_path:
         result.append("--project-path")
         result.append(submodels_path)

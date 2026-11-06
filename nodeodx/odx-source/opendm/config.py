@@ -215,6 +215,16 @@ def config(argv=None, parser=None):
                        choices=processopts,
                        help=('Rerun processing from this stage. Can be one of: %(choices)s. Default: %(default)s'))
 
+    # Internal (not part of the public options schema): set by the primary of a split project
+    # to re-run its submodels from a stage. Registered through the base class so that
+    # option-listing parsers (NodeODX's odmOptionsToJson.py) never see it.
+    argparse.ArgumentParser.add_argument(parser, '--submodel-rerun-from',
+                       action=StoreValue,
+                       metavar='<string>',
+                       choices=processopts,
+                       default=None,
+                       help=argparse.SUPPRESS)
+
     parser.add_argument('--min-num-features',
                         metavar='<integer>',
                         action=StoreValue,
@@ -936,6 +946,12 @@ def config(argv=None, parser=None):
     if args.sfm_algorithm == 'planar':
       log.WARNING("--sfm-algorithm planar is deprecated. --sfm-algorithm will be set to incremental")
       args.sfm_algorithm = 'incremental'
+
+    if args.sm_cluster and args.optimize_disk_space:
+        # Class-O re-runs seed submodels from files that --optimize-disk-space deletes
+        log.ERROR("--optimize-disk-space cannot be used together with --sm-cluster (split projects "
+                  "keep per-submodel results that later re-runs depend on)")
+        sys.exit(1)
 
     if args.sm_cluster:
         try:

@@ -8,7 +8,7 @@ COPY odx-source/run.py odx-source/run.sh odx-source/VERSION odx-source/settings.
 RUN chmod 755 /code/run.sh /code/run.py
 COPY odx-source/LICENSE odx-source/SOURCE.json /code/shared-release/
 COPY odx-source/licenses /code/shared-release/licenses
-COPY odx-source/tests/test_shared_submodel.py /code/tests/test_shared_submodel.py
+COPY odx-source/tests /code/tests
 COPY nodeodx-source /var/www
 WORKDIR /code
 RUN python3 -c 'import hashlib,json,pathlib; m=json.load(open("/code/shared-release/SOURCE.json")); names=[n for n in m["files"] if n.startswith(("opendm/","stages/")) or n in ("run.py","run.sh","VERSION","settings.yaml","tests/test_shared_submodel.py")]; assert all(hashlib.sha256(pathlib.Path("/code",n).read_bytes()).hexdigest()==m["files"][n] for n in names)'
