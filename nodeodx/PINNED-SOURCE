@@ -22,7 +22,8 @@ Both entry points invoked directly with --help; 12 engine and 8 worker tests pas
 
 Split resume release 2026-11-06:
 ODX engine overlay commit: 2ff6f0dd (split-project resume classes; files vendored into odx-source, see SOURCE.json overlay_notes)
-Runtime image: REBUILD REQUIRED from nodeodx/shared-runtime.Dockerfile; record the new digest here and pin NODEODM_IMAGE to it (the checkpoint image guard compares digests).
+Runtime image (shared-2ff6f0dd): ghcr.io/in-for-disaster-analytics/nodeodx@sha256:bd3d6ee6a40ae588ba3ee98d8199ff8b495b278089285e7e1c9e2b74556a48ce
+Build: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/42257106405
 Worker scripts: terminal checkpoint + resume rules (PR #5); ClusterODX checkpoint resume must be enabled (tapis.resume.enabled) for resumes to be offered.
 
 Checkpoint launcher 2026-11-06:
