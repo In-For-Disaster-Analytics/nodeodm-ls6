@@ -165,7 +165,7 @@ register_with_clusterodm() {
     if [ -n "${NODEODM_RESUME_TASK_UUID:-}" ]; then
         RESUME_JSON_FIELDS=", \"checkpointResume\": true, \"resumeTaskUuid\": \"${NODEODM_RESUME_TASK_UUID}\", \"resumeMode\": \"${NODEODM_RESUME_MODE:-unknown}\", \"resumeFallbackReason\": \"${NODEODM_RESUME_FALLBACK_REASON:-}\""
     fi
-    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"${RESUME_JSON_FIELDS}}"
+    JSON_PAYLOAD="{\"hostname\": \"$NODEODM_HOST\", \"port\": $NODEODM_REGISTER_PORT, \"token\": \"$TAP_TOKEN\", \"uuid\": \"$REGISTRATION_UUID\", \"tapisJobUuid\": \"${_tapisJobUUID}\", \"tapisJobOwner\": \"${_tapisJobOwner}\", \"nodeReady\": true, \"schemaVersion\": 2, \"childIndex\": \"${NODEODM_CHILD_INDEX:-primary}\", \"role\": \"${NODEODM_ROLE:-admin}\", \"hostId\": \"${NODEODM_HOST_ID:-0}\", \"workerId\": \"${NODEODM_WORKER_ID:-0}\", \"jobIndex\": \"${NODEODM_JOB_INDEX:-1}\", \"jobCount\": \"${NODEODM_JOB_COUNT:-1}\", \"replicasPerJob\": \"${NODEODM_REPLICAS_PER_JOB:-1}\"${RESUME_JSON_FIELDS}}"
     echo "Debug: JSON payload='$JSON_PAYLOAD'"
 
     # Show the exact curl command for manual testing
