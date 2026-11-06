@@ -1,6 +1,10 @@
 name: Publish shared-submodel runtime
 on:
   workflow_dispatch:
+  # workflow_dispatch only works from the default branch; this lets the release branch build the pinned runtime.
+  push:
+    branches: [upgrade/nodeodx-tacc-ls6]
+    paths: [.github/workflows/publish-shared-runtime.yml]
 permissions:
   contents: read
   packages: write
