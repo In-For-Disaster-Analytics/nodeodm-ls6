@@ -1,5 +1,6 @@
 import os
 import shutil
+import uuid
 from opendm import log
 from opendm.osfm import OSFMContext, get_submodel_argv, get_submodel_paths, get_all_submodel_paths
 from opendm import types
@@ -10,7 +11,8 @@ from opendm.dem import utils
 from opendm.dem.merge import euclidean_merge_dems
 from opensfm.large import metadataset
 from opendm.cropper import Cropper
-from opendm.remote import LocalRemoteExecutor
+from opendm.remote import LocalRemoteExecutor, check_consistent_toolchain_stamps, missing_class_o_seeds, write_toolchain_stamp, options_hash, TOOLCHAIN_COMPLETED, INITIAL_RUN_ID
+from opendm import resume_classes
 from opendm.shots import merge_geojson_shots, merge_cameras
 from opendm import point_cloud
 from opendm.utils import double_quote, add_raster_meta_tags
@@ -45,7 +47,9 @@ class ODMSplitStage(types.ODM_Stage):
             octx = OSFMContext(tree.opensfm)
             split_done_file = octx.path("split_done.txt")
 
-            if not io.file_exists(split_done_file) or self.rerun():
+            if io.file_exists(split_done_file) and args.submodel_rerun_from and not self.rerun():
+                self.rerun_submodels(args, tree, local_workflow)
+            elif not io.file_exists(split_done_file) or self.rerun():
                 orig_max_concurrency = args.max_concurrency
                 if not local_workflow:
                     args.max_concurrency = max(1, args.max_concurrency - 1)
@@ -187,6 +191,7 @@ class ODMSplitStage(types.ODM_Stage):
 
                         # Re-run the ODX toolchain on the submodel
                         system.run(" ".join(map(double_quote, map(str, argv))), env_vars=os.environ.copy())
+                        write_toolchain_stamp(os.path.join(sp, "..", TOOLCHAIN_COMPLETED), INITIAL_RUN_ID, options_hash(args))
                 else:
                     lre.set_projects([os.path.abspath(os.path.join(p, "..")) for p in submodel_paths])
                     lre.run_toolchain()
@@ -201,6 +206,51 @@ class ODMSplitStage(types.ODM_Stage):
             log.INFO("Normal dataset, will process all at once.")
             self.progress = 0.0
 
+    def rerun_submodels(self, args, tree, local_workflow):
+        """
+        Stage-seeded submodel re-run of an already split project: no split, no alignment,
+        only the submodel toolchains run again, from args.submodel_rerun_from.
+        """
+        if args.submodel_rerun_from != resume_classes.submodel_rerun_stage('O'):
+            raise system.ExitException("Cannot re-run submodels from %s" % args.submodel_rerun_from)
+
+        # Submodels that completed a previous toolchain have their filtered point cloud
+        projects = [os.path.dirname(os.path.dirname(p)) for p in sorted(
+                        get_submodel_paths(tree.submodels_path, "odm_filterpoints", "point_cloud.ply"))]
+        if not projects:
+            raise system.ExitException("No submodel has results to re-run from (%s). Run the task fully." % tree.submodels_path)
+
+        if not local_workflow:
+            for project in projects:
+                missing = missing_class_o_seeds(project)
+                if missing:
+                    raise system.ExitException("Cannot re-run %s, missing %s. Run the task fully." % (project, ", ".join(missing)))
+
+        log.INFO("Re-running the toolchain of %s submodels from %s" % (len(projects), args.submodel_rerun_from))
+        orig_max_concurrency = args.max_concurrency
+        class_run_id = uuid.uuid4().hex
+        try:
+            if local_workflow:
+                for project in projects:
+                    name = os.path.basename(project)
+                    log.INFO("========================")
+                    log.INFO("Processing %s" % name)
+                    log.INFO("========================")
+
+                    argv = get_submodel_argv(args, tree.submodels_path, name)
+                    system.run(" ".join(map(double_quote, map(str, argv))), env_vars=os.environ.copy())
+
+                    # Stamp after success so an interrupted re-run is detected at merge
+                    write_toolchain_stamp(os.path.join(project, TOOLCHAIN_COMPLETED), class_run_id, options_hash(args))
+            else:
+                args.max_concurrency = max(1, args.max_concurrency - 1)
+                lre = LocalRemoteExecutor(args.sm_cluster, args.sfm_algorithm, args.rolling_shutter, True,
+                                          submodel_rerun_from=args.submodel_rerun_from)
+                lre.set_projects(projects)
+                lre.run_toolchain()
+        finally:
+            args.max_concurrency = orig_max_concurrency
+
 
 class ODMMergeStage(types.ODM_Stage):
     def process(self, args, outputs):
@@ -210,7 +260,8 @@ class ODMMergeStage(types.ODM_Stage):
         if outputs['large']:
             if not os.path.exists(tree.submodels_path):
                 raise system.ExitException("We reached the merge stage, but %s folder does not exist. Something must have gone wrong at an earlier stage. Check the log and fix possible problem before restarting?" % tree.submodels_path)
-                
+
+            check_consistent_toolchain_stamps(tree.submodels_path)
 
             # Merge point clouds
             if args.merge in ['all', 'pointcloud']:

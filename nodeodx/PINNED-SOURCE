@@ -19,3 +19,8 @@ Runtime correction 2026-10-28: bounded seed links and executable run.sh/run.py.
 Current CPU runtime: ghcr.io/in-for-disaster-analytics/nodeodx@sha256:32dc3afc2f26e423d36ed1571b71e1e83fe1504a903b8e73681e8034b7105191
 Build validation: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/40707296528
 Both entry points invoked directly with --help; 12 engine and 8 worker tests passed.
+
+Split resume release 2026-11-06:
+ODX engine overlay commit: 2ff6f0dd (split-project resume classes; files vendored into odx-source, see SOURCE.json overlay_notes)
+Runtime image: REBUILD REQUIRED from nodeodx/shared-runtime.Dockerfile; record the new digest here and pin NODEODM_IMAGE to it (the checkpoint image guard compares digests).
+Worker scripts: terminal checkpoint + resume rules (PR #5); ClusterODX checkpoint resume must be enabled (tapis.resume.enabled) for resumes to be offered.
