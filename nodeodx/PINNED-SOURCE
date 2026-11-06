@@ -24,3 +24,8 @@ Split resume release 2026-11-06:
 ODX engine overlay commit: 2ff6f0dd (split-project resume classes; files vendored into odx-source, see SOURCE.json overlay_notes)
 Runtime image: REBUILD REQUIRED from nodeodx/shared-runtime.Dockerfile; record the new digest here and pin NODEODM_IMAGE to it (the checkpoint image guard compares digests).
 Worker scripts: terminal checkpoint + resume rules (PR #5); ClusterODX checkpoint resume must be enabled (tapis.resume.enabled) for resumes to be offered.
+
+Checkpoint launcher 2026-11-06:
+nodeodx/tapisjob_app.sh now sources lib/common.sh (NODEODM_LIB_FUNCTIONS_ONLY=1), lib/checkpoint.sh and lib/task_watch.sh; nodeodx/build-zip.sh packs lib/ from the repo root into the ZIP.
+Checkpoint variables (NODEODM_CHECKPOINT_*, NODEODM_RESUME_*) are documented in the root README section "Terminal checkpoint and resume" and nodeodx/README-ZIP.md.
+Tapis app version is NOT bumped here; ops bumps it at release. Shared runtime tag: shared-2ff6f0dd.

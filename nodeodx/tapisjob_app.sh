@@ -19,6 +19,22 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$SCRIPT_DIR/nodeodx-source"
 
+# Shared checkpoint/resume modules (repo-root lib/, packed next to this script in the ZIP).
+# NODEODM_LIB_FUNCTIONS_ONLY=1 keeps lib/common.sh from resetting this launcher's variables,
+# curl and trap; only the function definitions and checkpoint defaults are loaded.
+NODEODM_LIB_FUNCTIONS_ONLY=1
+for _lib in common checkpoint task_watch; do
+    if [[ ! -f "$SCRIPT_DIR/lib/$_lib.sh" ]]; then
+        echo "ERROR: lib/$_lib.sh is missing from the package; rebuild the ZIP with nodeodx/build-zip.sh" >&2
+        exit 1
+    fi
+done
+unset _lib
+source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/checkpoint.sh"
+source "$SCRIPT_DIR/lib/task_watch.sh"
+verify_modules_loaded || exit 1
+
 MAX_CONCURRENCY="${1:-${NODEODX_DEFAULT_MAX_CONCURRENCY:-12}}"
 NODEODX_PARALLEL_QUEUE_PROCESSING="${NODEODX_PARALLEL_QUEUE_PROCESSING:-64}"
 NODEODX_SHARED_SUBMODEL_V1="${NODEODX_SHARED_SUBMODEL_V1:-1}"
@@ -155,6 +171,42 @@ fi
 registration_request_payload() {
     python3 -c 'import json, os, sys; p=json.load(sys.stdin); secret=os.environ.get("NODEODX_REGISTRATION_SECRET"); p.update({"registrationSecret": secret} if secret else {}); print(json.dumps(p))'
 }
+
+# Registration body read from the NODEODX_REGISTRATION_* environment. schemaVersion 2 and the
+# resume fields are what ClusterODX expects from a checkpoint-aware worker; the resume fields
+# are present only when this job was submitted to resume a task.
+registration_payload() {
+    python3 - <<'PY'
+import json
+import os
+p = {
+    "hostname": os.environ["NODEODX_REGISTRATION_HOST"],
+    "port": int(os.environ["NODEODX_REGISTRATION_PORT"]),
+    "token": os.environ["NODEODX_REGISTRATION_TOKEN"],
+    "registrationUuid": os.environ["NODEODX_REGISTRATION_UUID"],
+    "tapisJobUuid": os.environ["NODEODX_REGISTRATION_JOB_UUID"],
+    "tapisJobOwner": os.environ["NODEODX_REGISTRATION_OWNER"],
+    "nodeReady": True,
+    "schemaVersion": 2,
+    "role": os.environ["NODEODX_REGISTRATION_ROLE"],
+    "workerId": int(os.environ["NODEODX_REGISTRATION_WORKER_ID"]),
+    "replicasPerJob": 1,
+    "childIndex": os.environ["NODEODX_REGISTRATION_CHILD_INDEX"],
+    "hostId": int(os.environ["NODEODX_REGISTRATION_HOST_INDEX"]),
+    "jobIndex": int(os.environ["NODEODX_REGISTRATION_JOB_INDEX"]),
+    "jobCount": int(os.environ["NODEODX_REGISTRATION_JOB_COUNT"]),
+}
+resume_uuid = os.environ.get("NODEODM_RESUME_TASK_UUID", "")
+if resume_uuid:
+    p.update({
+        "checkpointResume": True,
+        "resumeTaskUuid": resume_uuid,
+        "resumeMode": os.environ.get("NODEODM_RESUME_MODE") or "unknown",
+        "resumeFallbackReason": os.environ.get("NODEODM_RESUME_FALLBACK_REASON", ""),
+    })
+print(json.dumps(p))
+PY
+}
 NODEODX_CLEANUP_TASKS_AFTER="${NODEODX_CLEANUP_TASKS_AFTER:-0}"
 # Keep the NodeODX service alive when ClusterODM registration is unavailable so
 # the Tapis job can be inspected and the registration path can be retried or
@@ -188,6 +240,47 @@ CONFIG_PATH="$WORK_ROOT/nodeodx-config.json"
 LOG_FILE="$WORK_ROOT/nodeodx-launch.log"
 mkdir -p "$WORK_ROOT/data" "$WORK_ROOT/tmp" "$WORK_ROOT/logs"
 
+# --- Checkpoint/resume variable mapping ---------------------------------------------------
+# lib/checkpoint.sh and lib/task_watch.sh are shared with the legacy nodeodm-ls62 launcher and
+# read NODEODM_* names. This launcher keeps its NODEODX_* names; map them explicitly here.
+export NODEODM_RUNTIME_DIR="$RUNTIME_DIR"           # task data lives in $RUNTIME_DIR/data
+export NODEODM_PORT="$NODEODX_PORT"                 # per-child port (status watch, /info)
+export NODEODM_IMAGE="$NODEODX_IMAGE"               # digest pin recorded in the manifest
+export NODEODM_SIF="$SIF_PATH"                      # engine version fallback before launch
+export NODEODM_JOB_COUNT="$NODEODX_JOB_COUNT"
+export WORK_DIR="$WORK_ROOT"                        # task_watch done-files
+# LOG_FILE is shared by name; checkpoints copy it as logs/nodeodm.log.
+# Libs authenticate to the local NodeODX with ${_tapisJobOwner}; NODE_TOKEN is that owner by default.
+export _tapisJobOwner="${_tapisJobOwner:-$NODE_TOKEN}"
+if [[ "$NODE_TOKEN" != "$_tapisJobOwner" ]]; then
+    echo "WARNING: NODEODX_NODE_TOKEN differs from the job owner; checkpoint status polling uses the job owner" >&2
+fi
+# _tapisJobUUID and _tapisExecSystemOutputDir come from Tapis; OUTPUT_DIR is per child.
+OUTPUT_DIR="${_tapisExecSystemOutputDir:-$WORK_ROOT/output}"
+if [[ "$NODEODX_CHILD" == "1" ]]; then
+    OUTPUT_DIR="${OUTPUT_DIR%/}/node-${NODEODX_CHILD_INDEX:-${NODEODX_HOST_INDEX:-child}}"
+fi
+export OUTPUT_DIR
+mkdir -p "$OUTPUT_DIR"
+TASK_UUID=""
+STATUS_RESPONSE=""
+# Resume inputs injected by ClusterODX (empty on a normal job). Only the admin instance
+# resumes; workers receive the same environment but must not restore the task themselves.
+export NODEODM_RESUME_TASK_UUID="${NODEODM_RESUME_TASK_UUID:-}"
+export NODEODM_RESUME_CHECKPOINT_PATH="${NODEODM_RESUME_CHECKPOINT_PATH:-}"
+export NODEODM_RESUME_DATA_PATH="${NODEODM_RESUME_DATA_PATH:-}"
+export NODEODM_RESUME_RUNTIME_PATH="${NODEODM_RESUME_RUNTIME_PATH:-}"
+export NODEODM_RESUME_IMPORT_PATH="${NODEODM_RESUME_IMPORT_PATH:-}"
+export NODEODM_RESUME_OPTIONS_JSON="${NODEODM_RESUME_OPTIONS_JSON:-}"
+export NODEODM_RESUME_ALLOWED_ROOTS="${NODEODM_RESUME_ALLOWED_ROOTS:-${SCRATCH:-/scratch}:/scratch}"
+export NODEODM_RESUME_MODE="${NODEODM_RESUME_MODE:-}"
+export NODEODM_RESUME_FALLBACK_REASON="${NODEODM_RESUME_FALLBACK_REASON:-}"
+if [[ "$NODEODX_ROLE" != "admin" ]]; then
+    NODEODM_RESUME_TASK_UUID=""
+fi
+# NODEODM_CHECKPOINT_ROOT, NODEODM_CORRAL_MEDIA_ROOT, NODEODM_RESUME_AS_UUID and
+# NODEODM_RESUME_ALLOW_COLD_START default in lib/common.sh.
+
 log() {
     printf '[NodeODX] %s\n' "$*" | tee -a "$LOG_FILE"
 }
@@ -209,6 +302,11 @@ IFS=: read -r -a IMPORT_ROOT_ARRAY <<< "$NODEODX_IMPORT_PATH_ROOTS"
 for import_root in "${IMPORT_ROOT_ARRAY[@]}"; do
     add_bind "$import_root"
 done
+# Corral media tree (import_path sources and the checkpoint root) and any resume paths must be
+# visible inside the container: restored task directories symlink into them.
+add_bind "$NODEODM_CORRAL_MEDIA_ROOT"
+add_bind "$NODEODM_RESUME_RUNTIME_PATH"
+add_bind "$NODEODM_RESUME_DATA_PATH"
 
 export APPTAINERENV_NODEODX_IMPORT_PATH_ROOTS="$NODEODX_IMPORT_PATH_ROOTS"
 export SINGULARITYENV_NODEODX_IMPORT_PATH_ROOTS="$NODEODX_IMPORT_PATH_ROOTS"
@@ -328,6 +426,19 @@ PY
 cleanup() {
     local code=$?
     trap - EXIT TERM INT
+    # Safety net: the status watch normally wrote the terminal checkpoint already (then this
+    # is a no-op). Runs before deregistration so the task is checkpointed while the node is up.
+    # Refresh the task status first: a stale "running" STATUS_RESPONSE would make the exit sync
+    # mark an already-checkpointed task inconsistent.
+    STATUS_RESPONSE=""
+    if [[ -n "${TASK_UUID:-}" ]]; then
+        STATUS_RESPONSE="$(command curl -fsS --connect-timeout 3 --max-time 5 --get \
+            --data-urlencode "token=$NODE_TOKEN" \
+            "http://127.0.0.1:${NODEODX_PORT}/task/${TASK_UUID}/info" 2>/dev/null)" || STATUS_RESPONSE=""
+    fi
+    task_watch_wait "${TASK_UUID:-}" || true
+    checkpoint_sync exit "${TASK_UUID:-}" || true
+    task_watch_stop
     deregister_node
     if [[ -n "$NODEODX_PID" ]] && kill -0 "$NODEODX_PID" 2>/dev/null; then
         kill "$NODEODX_PID" 2>/dev/null || true
@@ -415,33 +526,51 @@ if ! verify_runtime_dependencies; then
     exit 1
 fi
 
-log "starting NodeODX"
-apptainer exec --pwd /var/www "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" \
-    "$NODEODX_RUNTIME_NODE" index.js --config /tmp/nodeodx-config.json \
-    >>"$LOG_FILE" 2>&1 &
-NODEODX_PID=$!
+# Remove expired/oversized checkpoints (best effort), then restore a requested checkpoint
+# BEFORE NodeODX starts: it reads data/tasks.json at startup.
+checkpoint_prune || true
+RESUME_RESTORE_FAILED=0
+if ! checkpoint_restore_if_requested; then
+    RESUME_RESTORE_FAILED=1
+    log "checkpoint resume failed: reason=${NODEODM_RESUME_FALLBACK_REASON:-unknown}; will register and exit without starting a task"
+    printf '{"resumeTaskUuid":"%s","resumeMode":"failed","resumeFallbackReason":"%s"}\n' \
+        "${NODEODM_RESUME_TASK_UUID:-}" "${NODEODM_RESUME_FALLBACK_REASON:-}" \
+        > "$OUTPUT_DIR/resume-failure.json" 2>/dev/null || true
+fi
 
-NODEODX_INFO=""
-for attempt in {1..30}; do
-    if NODEODX_INFO="$(curl -fsS --connect-timeout 5 --get \
-        --data-urlencode "token=$NODE_TOKEN" \
-        "http://127.0.0.1:${NODEODX_PORT}/info" 2>/dev/null)"; then
-        break
-    fi
-    if ! kill -0 "$NODEODX_PID" 2>/dev/null; then
-        log "ERROR: NodeODX exited during startup"
+if (( RESUME_RESTORE_FAILED == 0 )); then
+    log "starting NodeODX"
+    apptainer exec --pwd /var/www "${NODEODX_BIND_ARGS[@]}" "$SIF_PATH" \
+        "$NODEODX_RUNTIME_NODE" index.js --config /tmp/nodeodx-config.json \
+        >>"$LOG_FILE" 2>&1 &
+    NODEODX_PID=$!
+
+    NODEODX_INFO=""
+    for attempt in {1..30}; do
+        if NODEODX_INFO="$(curl -fsS --connect-timeout 5 --get \
+            --data-urlencode "token=$NODE_TOKEN" \
+            "http://127.0.0.1:${NODEODX_PORT}/info" 2>/dev/null)"; then
+            break
+        fi
+        if ! kill -0 "$NODEODX_PID" 2>/dev/null; then
+            log "ERROR: NodeODX exited during startup"
+            tail -n 100 "$LOG_FILE" >&2 || true
+            exit 1
+        fi
+        sleep 2
+    done
+    if [[ -z "$NODEODX_INFO" ]]; then
+        log "ERROR: NodeODX did not answer /info"
         tail -n 100 "$LOG_FILE" >&2 || true
         exit 1
     fi
-    sleep 2
-done
-if [[ -z "$NODEODX_INFO" ]]; then
-    log "ERROR: NodeODX did not answer /info"
-    tail -n 100 "$LOG_FILE" >&2 || true
-    exit 1
+    log "NodeODX /info responded"
+    printf '%s\n' "$NODEODX_INFO" > "$WORK_ROOT/nodeodx-info.json"
+    # Engine version / image identity for manifests (NodeODX answers /info now)
+    checkpoint_load_worker_identity
+else
+    log "skipping NodeODX launch (failed checkpoint resume)"
 fi
-log "NodeODX /info responded"
-printf '%s\n' "$NODEODX_INFO" > "$WORK_ROOT/nodeodx-info.json"
 
 TAP_TOKEN=""
 LOGIN_PORT=""
@@ -492,28 +621,7 @@ if [[ -n "$REGISTERED_HOST" ]]; then
     export NODEODX_REGISTRATION_OWNER="${_tapisJobOwner:-$USER}"
     export NODEODX_REGISTRATION_TOKEN="$NODE_TOKEN"
     export NODEODX_REGISTRATION_JOB_UUID="${_tapisJobUUID:-$JOB_ID}"
-    REGISTRATION_PAYLOAD="$(python3 - <<'PY'
-import json
-import os
-p = {
-    "hostname": os.environ["NODEODX_REGISTRATION_HOST"],
-    "port": int(os.environ["NODEODX_REGISTRATION_PORT"]),
-    "token": os.environ["NODEODX_REGISTRATION_TOKEN"],
-    "registrationUuid": os.environ["NODEODX_REGISTRATION_UUID"],
-    "tapisJobUuid": os.environ["NODEODX_REGISTRATION_JOB_UUID"],
-    "tapisJobOwner": os.environ["NODEODX_REGISTRATION_OWNER"],
-    "nodeReady": True,
-    "role": os.environ["NODEODX_REGISTRATION_ROLE"],
-    "workerId": int(os.environ["NODEODX_REGISTRATION_WORKER_ID"]),
-    "replicasPerJob": 1,
-    "childIndex": os.environ["NODEODX_REGISTRATION_CHILD_INDEX"],
-    "hostId": int(os.environ["NODEODX_REGISTRATION_HOST_INDEX"]),
-    "jobIndex": int(os.environ["NODEODX_REGISTRATION_JOB_INDEX"]),
-    "jobCount": int(os.environ["NODEODX_REGISTRATION_JOB_COUNT"]),
-}
-print(json.dumps(p))
-PY
-)"
+    REGISTRATION_PAYLOAD="$(registration_payload)"
     REGISTRATION_RESPONSE_FILE="$WORK_ROOT/registration-response.txt"
     REGISTRATION_HEADERS_FILE="$WORK_ROOT/registration-headers.txt"
     CURL_ARGS=(-sS --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json')
@@ -587,6 +695,14 @@ else
     log "continuing with NodeODX alive; TAP reverse proxy or registration is unavailable"
 fi
 
+if (( RESUME_RESTORE_FAILED == 1 )); then
+    # Registration carried resumeMode=failed + resumeFallbackReason so ClusterODX can fail the
+    # task with a reason. Give it a moment to read the registration before the trap deregisters.
+    log "checkpoint resume failed (${NODEODM_RESUME_FALLBACK_REASON:-unknown}); exiting after registration"
+    sleep "${NODEODM_RESUME_FAILED_GRACE_SECONDS:-30}"
+    exit 0
+fi
+
 cat > "$WORK_ROOT/connection_info.txt" <<EOF
 NodeODX LS6 connection
 ======================
@@ -598,5 +714,50 @@ Shared import roots: ${NODEODX_IMPORT_PATH_ROOTS}
 The NodeODX authentication token is intentionally not written here.
 EOF
 
+# Find a queued/running task on the local NodeODX. On a new one, set TASK_UUID, write the
+# task-start manifest and start the status watch (terminal checkpoint as soon as it finishes).
+discover_active_task() {
+    local list uuid info code
+    list="$(command curl -fsS --connect-timeout 5 --max-time 15 --get \
+        --data-urlencode "token=$NODE_TOKEN" \
+        "http://127.0.0.1:${NODEODX_PORT}/task/list" 2>/dev/null)" || return 0
+    for uuid in $(printf '%s' "$list" | python3 -c '
+import json, sys
+try:
+    for t in json.load(sys.stdin):
+        if isinstance(t, dict) and t.get("uuid"):
+            print(t["uuid"])
+except Exception:
+    pass
+' 2>/dev/null); do
+        [[ "$uuid" == "$TASK_UUID" ]] && continue
+        info="$(command curl -fsS --connect-timeout 5 --max-time 15 --get \
+            --data-urlencode "token=$NODE_TOKEN" \
+            "http://127.0.0.1:${NODEODX_PORT}/task/${uuid}/info" 2>/dev/null)" || continue
+        code="$(printf '%s' "$info" | python3 -c '
+import json, sys
+try:
+    s = json.load(sys.stdin).get("status")
+    print(s.get("code") if isinstance(s, dict) else s)
+except Exception:
+    print("")
+' 2>/dev/null)"
+        if [[ "$code" == "10" || "$code" == "20" ]]; then
+            TASK_UUID="$uuid"
+            STATUS_RESPONSE="$info"
+            log "found task $TASK_UUID (status code $code)"
+            checkpoint_sync "task-start" "$TASK_UUID" || true
+            task_watch_start "$TASK_UUID"
+            return 0
+        fi
+    done
+}
+
 log "NodeODX is ready; waiting for ClusterODM tasks"
+# sleep + wait keeps the loop interruptible so the TERM/INT trap runs promptly.
+while kill -0 "$NODEODX_PID" 2>/dev/null; do
+    discover_active_task || true
+    sleep "${NODEODM_TASK_WATCH_INTERVAL_SECONDS:-5}" &
+    wait $! || true
+done
 wait "$NODEODX_PID"
