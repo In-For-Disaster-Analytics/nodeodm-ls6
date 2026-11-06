@@ -77,6 +77,13 @@ launch_multi_node_workers() {
     exit $status
 }
 
+# NODEODM_LIB_FUNCTIONS_ONLY=1 (set by nodeodx/tapisjob_app.sh, which has its own variable
+# names, trap and curl handling): load only the shared checkpoint/resume contract below and
+# the function definitions. The launcher-state defaults, curl wrapper and trap reset are skipped
+# so they cannot clobber the calling launcher's variables.
+NODEODM_LIB_FUNCTIONS_ONLY="${NODEODM_LIB_FUNCTIONS_ONLY:-0}"
+
+if [[ "$NODEODM_LIB_FUNCTIONS_ONLY" != "1" ]]; then
 # Tapis/env inputs (set by Tapis or environment before module load)
 # Set defaults for local testing (override with SKIP_TAP_SETUP=1)
 export _tapisJobUUID="${_tapisJobUUID:-test-$(uuidgen 2>/dev/null || echo localjob)}"
@@ -91,6 +98,9 @@ export NODEODM_LOG_LEVEL="${NODEODM_LOG_LEVEL:-silly}"
 export NODEODM_IMAGE="${NODEODM_IMAGE:-ghcr.io/wmobley/nodeodm:latest}"
 export NODEODM_MONITOR_TIMEOUT_SEC="${NODEODM_MONITOR_TIMEOUT_SEC:-}"
 export NODEODM_MONITOR_TIMEOUT_HOURS="${NODEODM_MONITOR_TIMEOUT_HOURS:-}"
+fi
+
+# Checkpoint/resume contract shared with every launcher (always loaded)
 export NODEODM_CHECKPOINT_ROOT="${NODEODM_CHECKPOINT_ROOT:-/corral/utexas/BCS26030/webodm/media/.nodeodm-checkpoints}"
 export NODEODM_CORRAL_MEDIA_ROOT="${NODEODM_CORRAL_MEDIA_ROOT:-/corral/utexas/BCS26030/webodm/media}"
 export NODEODM_CHECKPOINT_INTERVAL_SECONDS="${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}"
@@ -104,7 +114,9 @@ export NODEODM_RESUME_AS_UUID="${NODEODM_RESUME_AS_UUID:-}"
 export NODEODM_RESUME_ALLOW_COLD_START="${NODEODM_RESUME_ALLOW_COLD_START:-0}"
 export NODEODM_TASK_WATCH_INTERVAL_SECONDS="${NODEODM_TASK_WATCH_INTERVAL_SECONDS:-5}"
 export NODEODM_TASK_WATCH_WAIT_SECONDS="${NODEODM_TASK_WATCH_WAIT_SECONDS:-3600}"
+export CHECKPOINT_LAST_SYNC="${CHECKPOINT_LAST_SYNC:-0}" CHECKPOINT_SYNCING="${CHECKPOINT_SYNCING:-0}"
 
+if [[ "$NODEODM_LIB_FUNCTIONS_ONLY" != "1" ]]; then
 # Tapis execution directories (for local testing)
 export _tapisExecSystemInputDir="${_tapisExecSystemInputDir:-/tmp/test-input}"
 export _tapisExecSystemOutputDir="${_tapisExecSystemOutputDir:-/tmp/test-output}"
@@ -133,12 +145,12 @@ export NODEODM_IMPORT_PATH_ROOTS="" _tapisJobWorkingDir=""
 export NV_FLAG="" HAS_GPU="0"
 export INPUT_DIR="" OUTPUT_DIR="" WORK_DIR="" WORK_DIR_BASE=""
 export ORIGINAL_ARGS=()
-export CHECKPOINT_LAST_SYNC="0" CHECKPOINT_SYNCING="0"
 export NODE_ACTIVITY_DIR="" NODE_ACTIVITY_FILE="" SHUTDOWN_FLAG=""
 export REGISTERED_NODE_ID="" REGISTRATION_UUID=""
 export TASK_OUTPUT_LINE="0"
 export NODE_EXIT_STATUS="0"
 export NODEODM_PRESERVE_ON_EXIT="${NODEODM_PRESERVE_ON_EXIT:-0}"
+fi
 
 # Internal state
 MODULES_LOADED=0
@@ -148,12 +160,14 @@ MODULES_LOADED=0
 # =============================================================================
 # Mirror output to stdout and log, wrap curl for verbose tracing
 # curl debug output goes to stderr to avoid polluting command substitution stdout
+if [[ "$NODEODM_LIB_FUNCTIONS_ONLY" != "1" ]]; then
 curl() {
     printf '\n>>> curl' >&2
     printf ' %q' "$@" >&2
     printf '\n' >&2
     command curl -v "$@"
 }
+fi
 
 # Start log file early so we always have something to tail
 init_logging() {
@@ -216,7 +230,9 @@ is_shutdown_requested() {
 # MODULE VERIFICATION
 # =============================================================================
 verify_modules_loaded() {
-    local required_functions=(
+    local required_functions=()
+    if [[ "$NODEODM_LIB_FUNCTIONS_ONLY" != "1" ]]; then
+        required_functions+=(
         # tap_auth.sh
         "get_tap_certificate" "get_tap_token" "load_tap_functions"
         "port_forwarding_tap" "send_url_to_webhook"
@@ -228,6 +244,10 @@ verify_modules_loaded() {
         # task_monitor.sh
         "monitor_tasks" "wait_for_task" "monitor_task_progress"
         "stream_task_output" "parse_task_status" "parse_task_progress"
+        )
+    fi
+    # Checkpoint modules are required by every launcher (including NODEODM_LIB_FUNCTIONS_ONLY=1)
+    required_functions+=(
         # checkpoint.sh
         "checkpoint_sync" "checkpoint_write_manifest" "checkpoint_restore_if_requested"
         "checkpoint_restore_from_scratch" "checkpoint_apply_resume_state"
@@ -318,7 +338,9 @@ cleanup() {
 }
 
 # Disable EXIT trap during module loading, enable after all modules loaded
-trap - EXIT
+if [[ "$NODEODM_LIB_FUNCTIONS_ONLY" != "1" ]]; then
+    trap - EXIT
+fi
 # Trap will be set in main script after verify_modules_loaded()
 
 # =============================================================================

@@ -23,6 +23,6 @@ jobs:
           file: ./nodeodx/shared-runtime.Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/in-for-disaster-analytics/nodeodx:shared-0d8384a6
+          tags: ghcr.io/in-for-disaster-analytics/nodeodx:shared-2ff6f0dd
           cache-from: type=gha,scope=nodeodx-shared
           cache-to: type=gha,mode=max,scope=nodeodx-shared

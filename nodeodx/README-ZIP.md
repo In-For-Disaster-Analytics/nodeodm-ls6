@@ -33,6 +33,38 @@ For example, 64 tasks at 12 threads each can request roughly 768 threads on
 one host; choose these settings together for the allocation's CPU and memory.
 The new default applies to jobs started with the updated launcher.
 
+## Checkpoint and resume
+
+The ZIP carries the shared `lib/` modules (`common.sh`, `checkpoint.sh`,
+`task_watch.sh` and the rest of the repo-root `lib/`) next to `tapisjob_app.sh`;
+`nodeodx/build-zip.sh` packs them from `../lib` and fails if any of the seven
+modules is missing. The launcher sources `common.sh` with
+`NODEODM_LIB_FUNCTIONS_ONLY=1`, so only the checkpoint/resume functions and
+defaults load, and maps its `NODEODX_*` variables to the `NODEODM_*` names the
+modules expect (see the "Checkpoint/resume variable mapping" block in
+`tapisjob_app.sh`).
+
+- Each instance finds its task through `/task/list`, writes a task-start
+  manifest and starts the status watch, which writes the terminal checkpoint
+  under `$NODEODM_CHECKPOINT_ROOT/<uuid>/` (manifest schema 2) when the task
+  reaches COMPLETED, FAILED or CANCELED. The EXIT trap runs
+  `task_watch_wait` and `checkpoint_sync exit` before deregistering.
+- At start the launcher prunes expired checkpoints and, when
+  `NODEODM_RESUME_TASK_UUID` is set (admin instance only), restores the
+  checkpoint before NodeODX starts. A failed restore registers with
+  `resumeMode: failed` and `resumeFallbackReason`, writes
+  `resume-failure.json` to the output directory, waits
+  `NODEODM_RESUME_FAILED_GRACE_SECONDS` (default 30) and exits 0.
+- Registration sends `schemaVersion: 2`, plus `checkpointResume`,
+  `resumeTaskUuid`, `resumeMode` and `resumeFallbackReason` for a resume job.
+- App environment variables: `NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL`
+  (default `0`), `NODEODM_CHECKPOINT_EXCLUDE`, `NODEODM_CHECKPOINT_MAX_BYTES`,
+  `NODEODM_RESUME_ALLOW_COLD_START` (default `0`). The Corral media root
+  (`NODEODM_CORRAL_MEDIA_ROOT`) is bound into the container.
+
+Full description: "Terminal checkpoint and resume" in the repository
+[README](../README.md#terminal-checkpoint-and-resume).
+
 ## Why the reverse proxy is part of the app
 
 LS6 compute nodes are not directly reachable from ClusterODM or WebODM. When
@@ -87,6 +119,8 @@ is a later change if the combined image is not the desired production pin.
 SKIP_UPLOAD=1 ./build-zip.sh
 unzip -t nodeodx-ls6.zip
 ```
+
+The archive also contains `lib/*.sh` copied from the repository root `lib/`.
 
 The default upload target is the BCS26030 Corral allocation. The upload must
 run with effective group `G-829114`; the archive ACL grants read access to the
