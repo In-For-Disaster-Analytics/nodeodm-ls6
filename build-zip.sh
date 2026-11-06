@@ -35,11 +35,11 @@ zip -r "$PACKAGE_NAME" tapisjob_app.sh app.json README-ZIP.md register-node.sh d
 echo "ZIP package created: $PACKAGE_NAME"
 echo "Size: $(ls -lh "$PACKAGE_NAME" | awk '{print $5}')"
 
-# Post-build verification: ensure all 6 module files present
+# Post-build verification: ensure all 7 module files present
 echo ""
 echo "Verifying module files in ZIP..."
-EXPECTED_MODULES=6
-FOUND_MODULES=$(unzip -l "$PACKAGE_NAME" | grep -E 'lib/(common|tap_auth|nodeodm_launch|task_monitor|checkpoint|clusterodm)\.sh$' | wc -l)
+EXPECTED_MODULES=7
+FOUND_MODULES=$(unzip -l "$PACKAGE_NAME" | grep -E 'lib/(common|tap_auth|nodeodm_launch|task_monitor|checkpoint|task_watch|clusterodm)\.sh$' | wc -l)
 if [[ "$FOUND_MODULES" -ne "$EXPECTED_MODULES" ]]; then
   echo "ERROR: ZIP missing module files (found $FOUND_MODULES/$EXPECTED_MODULES)"
   unzip -l "$PACKAGE_NAME" | grep "lib/"

@@ -87,6 +87,26 @@
           "key": "NODEODM_CLEANUP_MINUTES",
           "value": "0",
           "description": "Minutes before NodeODM deletes completed or canceled task data. 0 disables NodeODM cleanup so Tapis/Slurm owns lifecycle cleanup."
+        },
+        {
+          "key": "NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL",
+          "value": "0",
+          "description": "1 copies the task directory once to the Corral checkpoint root when the task reaches COMPLETED/FAILED/CANCELED (atomic copy, schema 2 manifest). 0 writes manifests only. Operators enable this after staging acceptance."
+        },
+        {
+          "key": "NODEODM_CHECKPOINT_EXCLUDE",
+          "value": "*.zip odm_orthophoto/*.mbtiles *_tiles/ entwine_pointcloud/ potree_pointcloud/",
+          "description": "Whitespace-separated rsync exclude patterns for the terminal checkpoint copy. 3d_tiles/ is always kept; images/ is excluded only when it is an import-path symlink."
+        },
+        {
+          "key": "NODEODM_CHECKPOINT_MAX_BYTES",
+          "value": "1099511627776",
+          "description": "Size cap in bytes for the checkpoint root, enforced oldest-first by the prune at job start. 0 disables the cap."
+        },
+        {
+          "key": "NODEODM_RESUME_ALLOW_COLD_START",
+          "value": "0",
+          "description": "0 (default): a failed checkpoint restore registers with resumeFallbackReason and the job exits without starting a task. 1: fall back to a cold start from NODEODM_RESUME_IMPORT_PATH."
         }
       ],
       "archiveFilter": {

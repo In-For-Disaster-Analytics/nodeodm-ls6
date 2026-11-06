@@ -16,6 +16,7 @@ source "$SCRIPT_DIR/lib/nodeodm_launch.sh"  # 3. Needs TAP token, writes NODEODM
 source "$SCRIPT_DIR/lib/clusterodm.sh"      # 4. Needs NODEODM_URL
 source "$SCRIPT_DIR/lib/task_monitor.sh"    # 5. Needs NODEODM_URL, TASK_UUID
 source "$SCRIPT_DIR/lib/checkpoint.sh"      # 6. Needs TASK_UUID, RUNTIME_DIR
+source "$SCRIPT_DIR/lib/task_watch.sh"      # 7. Needs checkpoint_sync, NODEODM_PORT
 
 # Verify all modules loaded successfully (fail fast)
 verify_modules_loaded || exit 1
@@ -69,13 +70,18 @@ NODEODM_CHECKPOINT_ROOT=${NODEODM_CHECKPOINT_ROOT:-/corral/utexas/BCS26030/webod
 NODEODM_CORRAL_MEDIA_ROOT=${NODEODM_CORRAL_MEDIA_ROOT:-/corral/utexas/BCS26030/webodm/media}
 NODEODM_CHECKPOINT_INTERVAL_SECONDS=${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}
 NODEODM_CHECKPOINT_RETENTION_SECONDS=${NODEODM_CHECKPOINT_RETENTION_SECONDS:-604800}
-NODEODM_CHECKPOINT_COPY_DATA=${NODEODM_CHECKPOINT_COPY_DATA:-0}
+NODEODM_CHECKPOINT_COPY_DATA=${NODEODM_CHECKPOINT_COPY_DATA:-0}  # deprecated; ignored
+# Terminal checkpoint: copy the task directory once when the task reaches COMPLETED/FAILED/CANCELED
+NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL=${NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL:-0}
+NODEODM_CHECKPOINT_EXCLUDE=${NODEODM_CHECKPOINT_EXCLUDE:-"*.zip odm_orthophoto/*.mbtiles *_tiles/ entwine_pointcloud/ potree_pointcloud/"}
+NODEODM_CHECKPOINT_MAX_BYTES=${NODEODM_CHECKPOINT_MAX_BYTES:-1099511627776}
 NODEODM_RESUME_TASK_UUID=${NODEODM_RESUME_TASK_UUID:-}
 NODEODM_RESUME_CHECKPOINT_PATH=${NODEODM_RESUME_CHECKPOINT_PATH:-}
 NODEODM_RESUME_DATA_PATH=${NODEODM_RESUME_DATA_PATH:-}
 NODEODM_RESUME_RUNTIME_PATH=${NODEODM_RESUME_RUNTIME_PATH:-}
 NODEODM_RESUME_IMPORT_PATH=${NODEODM_RESUME_IMPORT_PATH:-}
-NODEODM_RESUME_ALLOW_COLD_START=${NODEODM_RESUME_ALLOW_COLD_START:-1}
+NODEODM_RESUME_AS_UUID=${NODEODM_RESUME_AS_UUID:-}
+NODEODM_RESUME_ALLOW_COLD_START=${NODEODM_RESUME_ALLOW_COLD_START:-0}
 NODEODM_RESUME_ALLOWED_ROOTS=${NODEODM_RESUME_ALLOWED_ROOTS:-${SCRATCH:-/scratch}:/scratch}
 NODEODM_RESUME_OPTIONS_JSON=${NODEODM_RESUME_OPTIONS_JSON:-}
 NODEODM_RESUME_MODE=${NODEODM_RESUME_MODE:-}
@@ -463,11 +469,29 @@ create_nodeodm_config
 # Prepare runtime directory (import_path config, env exports, preflight checks)
 prepare_runtime_dir
 
-# Launch NodeODM
-launch_nodeodm
+# Remove expired / oversized checkpoints (best effort), then restore a requested checkpoint
+# BEFORE NodeODM starts (it reads tasks.json at startup).
+checkpoint_prune || true
+RESUME_RESTORE_FAILED=0
+if ! checkpoint_restore_if_requested; then
+    RESUME_RESTORE_FAILED=1
+    echo "Checkpoint resume failed: reason=${NODEODM_RESUME_FALLBACK_REASON:-unknown}; will register and exit without starting a task"
+    printf '{"resumeTaskUuid":"%s","resumeMode":"failed","resumeFallbackReason":"%s"}\n' \
+        "${NODEODM_RESUME_TASK_UUID:-}" "${NODEODM_RESUME_FALLBACK_REASON:-}" > "$OUTPUT_DIR/resume-failure.json" 2>/dev/null || true
+fi
 
-# Verify NodeODM connectivity
-verify_nodeodm_startup
+if [[ "$RESUME_RESTORE_FAILED" -eq 0 ]]; then
+    # Launch NodeODM
+    launch_nodeodm
+
+    # Verify NodeODM connectivity
+    verify_nodeodm_startup
+
+    # Engine version / image identity for manifests (NodeODM answers /info now)
+    checkpoint_load_worker_identity
+else
+    echo "Skipping NodeODM launch (failed checkpoint resume)"
+fi
 
 # =============================================================================
 # TAP EXTERNAL ACCESS
@@ -506,6 +530,14 @@ fi
 send_nodeodm_webhook
 set -e  # Re-enable exit on error
 echo "=== Registration phase completed ==="
+
+if [[ "$RESUME_RESTORE_FAILED" -eq 1 ]]; then
+    # Registration carried resumeMode=failed + resumeFallbackReason so ClusterODX can fail the
+    # task with a reason. Give it a moment to read the registration before we deregister.
+    echo "Checkpoint resume failed (${NODEODM_RESUME_FALLBACK_REASON:-unknown}); exiting after registration"
+    sleep "${NODEODM_RESUME_FAILED_GRACE_SECONDS:-30}"
+    exit 0
+fi
 
 # Send PTDataX webhook notifications
 send_nodeodm_status_to_ptdatax "ready" "NodeODM instance ready and registered with ClusterODM"

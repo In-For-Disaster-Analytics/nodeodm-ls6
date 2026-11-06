@@ -205,6 +205,7 @@ wait_for_task() {
             echo "Task $TASK_UUID is processing, monitoring progress..."
             send_nodeodm_status_to_ptdatax "processing" "NodeODM started processing task $TASK_UUID"
             checkpoint_sync "task-start" "$TASK_UUID"
+            task_watch_start "$TASK_UUID"
             mark_node_active
             break
         fi
@@ -279,25 +280,27 @@ monitor_task_progress() {
         case $STATUS in
             "COMPLETED")
                 echo "Task completed successfully"
+                # The status watch writes the terminal checkpoint; wait for it before reporting
+                # completion onward.
+                task_watch_wait "$TASK_UUID"
                 send_nodeodm_status_to_ptdatax "complete" "NodeODM task $TASK_UUID completed successfully"
-                checkpoint_sync "completed" "$TASK_UUID"
                 return 0
                 ;;
             "FAILED")
                 echo "Task failed"
+                task_watch_wait "$TASK_UUID"
                 echo "Error details:"
                 echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4
                 send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID failed: $(echo "$STATUS_RESPONSE" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)"
                 stream_task_output
-                checkpoint_sync "failed" "$TASK_UUID"
                 NODE_EXIT_STATUS=1
                 return 1
                 ;;
             "CANCELED")
                 echo "Task was canceled"
+                task_watch_wait "$TASK_UUID"
                 send_nodeodm_status_to_ptdatax "error" "NodeODM task $TASK_UUID was canceled"
                 stream_task_output
-                checkpoint_sync "canceled" "$TASK_UUID"
                 NODE_EXIT_STATUS=1
                 return 1
                 ;;

@@ -95,7 +95,15 @@ export NODEODM_CHECKPOINT_ROOT="${NODEODM_CHECKPOINT_ROOT:-/corral/utexas/BCS260
 export NODEODM_CORRAL_MEDIA_ROOT="${NODEODM_CORRAL_MEDIA_ROOT:-/corral/utexas/BCS26030/webodm/media}"
 export NODEODM_CHECKPOINT_INTERVAL_SECONDS="${NODEODM_CHECKPOINT_INTERVAL_SECONDS:-900}"
 export NODEODM_CHECKPOINT_RETENTION_SECONDS="${NODEODM_CHECKPOINT_RETENTION_SECONDS:-604800}"
-export NODEODM_CHECKPOINT_COPY_DATA="${NODEODM_CHECKPOINT_COPY_DATA:-0}"
+export NODEODM_CHECKPOINT_COPY_DATA="${NODEODM_CHECKPOINT_COPY_DATA:-0}"  # deprecated; ignored (see lib/checkpoint.sh)
+# Terminal checkpoint (docs/design/2026-11-06-task-versions-and-resumable-reruns.md, part A)
+export NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL="${NODEODM_CHECKPOINT_COPY_DATA_ON_TERMINAL:-0}"
+export NODEODM_CHECKPOINT_EXCLUDE="${NODEODM_CHECKPOINT_EXCLUDE:-*.zip odm_orthophoto/*.mbtiles *_tiles/ entwine_pointcloud/ potree_pointcloud/}"
+export NODEODM_CHECKPOINT_MAX_BYTES="${NODEODM_CHECKPOINT_MAX_BYTES:-1099511627776}"
+export NODEODM_RESUME_AS_UUID="${NODEODM_RESUME_AS_UUID:-}"
+export NODEODM_RESUME_ALLOW_COLD_START="${NODEODM_RESUME_ALLOW_COLD_START:-0}"
+export NODEODM_TASK_WATCH_INTERVAL_SECONDS="${NODEODM_TASK_WATCH_INTERVAL_SECONDS:-5}"
+export NODEODM_TASK_WATCH_WAIT_SECONDS="${NODEODM_TASK_WATCH_WAIT_SECONDS:-3600}"
 
 # Tapis execution directories (for local testing)
 export _tapisExecSystemInputDir="${_tapisExecSystemInputDir:-/tmp/test-input}"
@@ -224,6 +232,9 @@ verify_modules_loaded() {
         "checkpoint_sync" "checkpoint_write_manifest" "checkpoint_restore_if_requested"
         "checkpoint_restore_from_scratch" "checkpoint_apply_resume_state"
         "checkpoint_prepare_cold_start" "checkpoint_path_allowed_for_resume"
+        "checkpoint_prune" "checkpoint_evaluate_resumable" "checkpoint_restore_from_checkpoint"
+        # task_watch.sh
+        "task_watch_start" "task_watch_wait" "task_watch_stop"
     )
     
     local missing=0
@@ -268,7 +279,11 @@ cleanup() {
         rm -f "$SHUTDOWN_FLAG" 2>/dev/null || true
     fi
 
-    checkpoint_sync "exit" "${TASK_UUID:-${NODEODM_RESUME_TASK_UUID:-}}" || true
+    # Safety net only: the status watch normally wrote the terminal checkpoint already,
+    # in which case this is a no-op (a synced manifest for this task exists).
+    task_watch_wait "${TASK_UUID:-}" || true
+    checkpoint_sync "exit" "${TASK_UUID:-}" || true
+    task_watch_stop
 
     # Always notify PTDataX that NodeODM is shutting down (non-blocking)
     send_nodeodm_status_to_ptdatax "shutdown" "NodeODM instance shutting down - job ${_tapisJobUUID} complete"
