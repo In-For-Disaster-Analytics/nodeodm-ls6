@@ -62,7 +62,7 @@
     "opendm/resume_classes.json": "2564b8855cdcfcee80c04b7e3b843b15fd9f6c79e7581531e7b00ce6c407aa01",
     "opendm/resume_classes.py": "bc5ee4c8c914fea4852ba4f1a373c43a2a3b41d72a4be228b51807bd9d10bfab",
     "opendm/rollingshutter.py": "e5b073e0d9f933eee15ffd4c99bde928d699500f710cd19e55762ea92438b03d",
-    "opendm/shared_submodel.py": "5c516a72982e218bb9a8f891dbe1d1957943c6e96faa9a8487b8ebb0e83df2c6",
+    "opendm/shared_submodel.py": "89ef2af7a9a9f559e73b3da9bcd30cc8f9901177fce1ce4a962cbe8870914d64",
     "opendm/shots.py": "b11f35abe5007012dc58e09b88c147859b0a7739a48a3af9ba0805f171eb5625",
     "opendm/skyremoval/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "opendm/skyremoval/guidedfilter.py": "754ea0e538d4b191d7c3b067612de90a3ff608d15dba83284716b352cce85967",
@@ -106,7 +106,7 @@
     "tests/test_osfm.py": "8a607f1da6ce1e25fcdcf950a3c98436060e2d9c1fc3bfd586e4bff6b29f2dbf",
     "tests/test_remote.py": "8e480a511f0ee98bde65d67f5ad408af95eb3ec4058d591450aee94f381f851a",
     "tests/test_resume_classes.py": "8b928675023fce957be8e4a20ecdb69543177e04a3a6ea2f224aa0d8f8b74f37",
-    "tests/test_shared_submodel.py": "80640fac0cebc434928d0c75ec42ccfa9f08f4d5d55015b5b745134d7e696f56"
+    "tests/test_shared_submodel.py": "b702823cb13c6717e42d4181ca516b885fcaaba6027ef492885b029f472ac3d6"
   },
-  "overlay_notes": "2026-10-28: bounded parent-task seed links supported; nofollow anchored opens preserve regular-file archive contract. Base commit unchanged; modified source hashes below identify overlay. 2026-11-06: split-project resume classes (M/O/F): internal --submodel-rerun-from, class O seeds, completion stamps, restore validation, resume_classes.json; ODX overlay commit 2ff6f0dd on the upgrade/odx-tacc-ls6 lineage (not in the upstream repository). Base commit unchanged."
+  "overlay_notes": "2026-10-28: bounded parent-task seed links supported; nofollow anchored opens preserve regular-file archive contract. Base commit unchanged; modified source hashes below identify overlay. 2026-11-06: split-project resume classes (M/O/F): internal --submodel-rerun-from, class O seeds, completion stamps, restore validation, resume_classes.json; ODX overlay commit 2ff6f0dd on the upgrade/odx-tacc-ls6 lineage (not in the upstream repository). Base commit unchanged. 2026-11-10: restored bounded parent-task seed links in shared_submodel.snapshot (regression in shared-2ff6f0dd); ODX commit 425d0c85."
 }

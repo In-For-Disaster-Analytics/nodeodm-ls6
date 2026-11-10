@@ -30,3 +30,9 @@ Checkpoint launcher 2026-11-06:
 nodeodx/tapisjob_app.sh now sources lib/common.sh (NODEODM_LIB_FUNCTIONS_ONLY=1), lib/checkpoint.sh and lib/task_watch.sh; nodeodx/build-zip.sh packs lib/ from the repo root into the ZIP.
 Checkpoint variables (NODEODM_CHECKPOINT_*, NODEODM_RESUME_*) are documented in the root README section "Terminal checkpoint and resume" and nodeodx/README-ZIP.md.
 Tapis app version is NOT bumped here; ops bumps it at release. Shared runtime tag: shared-2ff6f0dd.
+
+Seed-link fix 2026-11-10:
+shared-2ff6f0dd regressed the 2026-10-28 bounded seed-link support (symlinked opensfm seeds failed with ELOOP). ODX commit 425d0c85 restores it.
+Runtime image (shared-425d0c85): ghcr.io/in-for-disaster-analytics/nodeodx@sha256:ff5194d08ba9c08d6fc14b84338c2172dc1de0b598864dba766ad50e2f08eb19
+Build: https://github.com/In-For-Disaster-Analytics/nodeodm-ls6/actions/runs/42832774876
+The launcher default NODEODX_IMAGE now points at this digest. Shared runtime tag: shared-425d0c85.
