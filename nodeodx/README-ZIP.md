@@ -28,9 +28,11 @@ one Slurm allocation and terminate when that allocation ends.
 Each NodeODX instance defaults to 64 simultaneous processing tasks, advertised
 as `maxParallelTasks` by `/info`. Set `NODEODX_PARALLEL_QUEUE_PROCESSING` to a
 positive integer to override this capacity. This is independent of
-`max_concurrency`, which limits threads within each task (12 by default).
-For example, 64 tasks at 12 threads each can request roughly 768 threads on
-one host; choose these settings together for the allocation's CPU and memory.
+`max_concurrency`, which limits threads within each task. It defaults to `0`,
+meaning every core Slurm allocated to the node (`SLURM_CPUS_ON_NODE`, 128 on
+LS6). Pass a positive integer, or set `NODEODX_DEFAULT_MAX_CONCURRENCY`, to cap
+it. Concurrent tasks on one host share those cores, so lower the cap when
+raising the task capacity.
 The new default applies to jobs started with the updated launcher.
 
 ## Checkpoint and resume
@@ -127,11 +129,11 @@ run with effective group `G-829114`; the archive ACL grants read access to the
 legacy group `G-820466`:
 
 ```text
-tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.20/nodeodx-ls6.zip
+tapis://cloud.data/corral-repl/utexas/BCS26030/NodeODX/1.0.21/nodeodx-ls6.zip
 ```
 
 The build script never registers or updates the Tapis app. Register app
-version `1.0.20` only after the ZIP and source/image pins have been reviewed.
+version `1.0.21` only after the ZIP and source/image pins have been reviewed.
 ClusterODX injects the request-scoped `TAPIS_ACCESS_TOKEN` into each submitted
 job; the launcher sends it as the bearer credential for both worker
 registration and shutdown deregistration, without logging the token. Do not
@@ -242,3 +244,12 @@ The local split toolchain executes `/code/run.py` directly. Both `run.py` and
 `run.sh` are executable and invoked directly during image build validation.
 Final dense reconstruction, merge and asset delivery still require a full
 processing acceptance run; passing smoke tests does not establish those stages.
+
+## Resource sampler
+
+Each host writes a block every `NODEODX_SAMPLER_INTERVAL` seconds (default 60,
+`0` disables) to `<work root>/logs/resource-sampler.log`: load, CPU busy and
+iowait, `MemAvailable`/`Dirty`/`Writeback`, `/proc/pressure/*`, processes in D
+state, the top processes by CPU, cumulative Lustre client bytes when
+`/proc/fs/lustre` is readable, and free space on the work directory. Use it to
+tell whether a slow stage is CPU-bound or I/O-bound.

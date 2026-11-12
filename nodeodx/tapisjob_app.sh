@@ -35,7 +35,15 @@ source "$SCRIPT_DIR/lib/checkpoint.sh"
 source "$SCRIPT_DIR/lib/task_watch.sh"
 verify_modules_loaded || exit 1
 
-MAX_CONCURRENCY="${1:-${NODEODX_DEFAULT_MAX_CONCURRENCY:-12}}"
+# Per-task ODM thread cap (NodeODM max_concurrency). 0 means "all cores Slurm
+# allocated to this node"; a small fixed value here starves every parallel stage.
+MAX_CONCURRENCY="${1:-${NODEODX_DEFAULT_MAX_CONCURRENCY:-0}}"
+if [[ "$MAX_CONCURRENCY" == "0" ]]; then
+    MAX_CONCURRENCY="${SLURM_CPUS_ON_NODE:-}"
+    if [[ ! "$MAX_CONCURRENCY" =~ ^[0-9]+$ || "$MAX_CONCURRENCY" -lt 1 ]]; then
+        MAX_CONCURRENCY="$(nproc 2>/dev/null || echo 12)"
+    fi
+fi
 NODEODX_PARALLEL_QUEUE_PROCESSING="${NODEODX_PARALLEL_QUEUE_PROCESSING:-64}"
 NODEODX_SHARED_SUBMODEL_V1="${NODEODX_SHARED_SUBMODEL_V1:-1}"
 NODEODX_PORT="${2:-${NODEODX_PORT:-3001}}"
@@ -383,6 +391,7 @@ REGISTERED_PORT=""
 REGISTERED_NODE_ID=""
 REGISTERED_REGISTRATION_UUID=""
 NODEODX_PID=""
+SAMPLER_PID=""
 
 extract_node_id() {
     python3 - "$1" <<'PY'
@@ -440,6 +449,7 @@ cleanup() {
     checkpoint_sync exit "${TASK_UUID:-}" || true
     task_watch_stop
     deregister_node
+    if [[ -n "$SAMPLER_PID" ]]; then kill "$SAMPLER_PID" 2>/dev/null || true; fi
     if [[ -n "$NODEODX_PID" ]] && kill -0 "$NODEODX_PID" 2>/dev/null; then
         kill "$NODEODX_PID" 2>/dev/null || true
         wait "$NODEODX_PID" 2>/dev/null || true
@@ -536,6 +546,45 @@ if ! checkpoint_restore_if_requested; then
     printf '{"resumeTaskUuid":"%s","resumeMode":"failed","resumeFallbackReason":"%s"}\n' \
         "${NODEODM_RESUME_TASK_UUID:-}" "${NODEODM_RESUME_FALLBACK_REASON:-}" \
         > "$OUTPUT_DIR/resume-failure.json" 2>/dev/null || true
+fi
+
+# Periodic host resource sampler. Writes one block per interval to
+# $WORK_ROOT/logs/resource-sampler.log so slow stages (e.g. the Entwine merge)
+# can be attributed to CPU, I/O wait, memory, or Lustre traffic after the fact.
+# Set NODEODX_SAMPLER_INTERVAL=0 to disable. Reads /proc only; failures are ignored.
+resource_sampler() {
+    local interval=$1 out=$2
+    local u n s i w idle_prev=0 total_prev=0 iow_prev=0
+    while sleep "$interval"; do
+        {
+            echo "=== $(date -u +%FT%TZ) host=$(hostname -s) load=$(cut -d' ' -f1-3 /proc/loadavg)"
+            read -r _ u n s i w _ < <(grep '^cpu ' /proc/stat)
+            local total=$((u + n + s + i + w))
+            local dt=$((total - total_prev))
+            if (( total_prev > 0 && dt > 0 )); then
+                echo "cpu: busy=$(( 100 * (dt - (i - idle_prev)) / dt ))% iowait=$(( 100 * (w - iow_prev) / dt ))%"
+            fi
+            total_prev=$total; idle_prev=$i; iow_prev=$w
+            grep -E '^(MemAvailable|Dirty|Writeback):' /proc/meminfo | tr -s ' ' | tr '\n' ' '; echo
+            for f in /proc/pressure/io /proc/pressure/cpu /proc/pressure/memory; do
+                [[ -r $f ]] && echo "psi $(basename "$f"): $(head -1 "$f")"
+            done
+            echo "procs_in_D_state=$(ps -eo state= | grep -c '^D')"
+            ps -eo pcpu=,nlwp=,state=,comm= --sort=-pcpu 2>/dev/null | head -5 | sed 's/^/top: /'
+            # Cumulative Lustre client bytes (diff consecutive samples to get rates)
+            for f in /proc/fs/lustre/llite/*/stats; do
+                [[ -r $f ]] && echo "lustre $(basename "$(dirname "$f")"): $(grep -E '^(read_bytes|write_bytes) ' "$f" | tr -s ' ' | tr '\n' ';')"
+            done
+            echo "df: $(df -Pk "$WORK_ROOT" | awk 'NR==2 {print $4 " KB free on " $6}')"
+        } >>"$out" 2>/dev/null || true
+    done
+}
+
+SAMPLER_INTERVAL="${NODEODX_SAMPLER_INTERVAL:-60}"
+if [[ "$SAMPLER_INTERVAL" =~ ^[0-9]+$ && "$SAMPLER_INTERVAL" -gt 0 ]]; then
+    resource_sampler "$SAMPLER_INTERVAL" "$WORK_ROOT/logs/resource-sampler.log" &
+    SAMPLER_PID=$!
+    log "resource sampler started (every ${SAMPLER_INTERVAL}s) -> $WORK_ROOT/logs/resource-sampler.log"
 fi
 
 if (( RESUME_RESTORE_FAILED == 0 )); then

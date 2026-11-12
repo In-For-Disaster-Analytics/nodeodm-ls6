@@ -12,7 +12,7 @@ SOURCE = LAUNCHER.read_text()
 
 
 class CapacityTests(unittest.TestCase):
-    def generate(self, override=None, shared='0'):
+    def generate(self, override=None, shared='0', extra_env=None):
         # Execute the actual validation and config writer, omitting launch/network steps.
         preamble = SOURCE[SOURCE.index('MAX_CONCURRENCY='):SOURCE.index('launch_multi_node_children()')]
         writer = SOURCE[SOURCE.index('export NODEODX_CONFIG_PATH='):SOURCE.index("python3 - \"$CONFIG_PATH\" <<'PY'")]
@@ -23,7 +23,9 @@ class CapacityTests(unittest.TestCase):
                        NODEODX_IMPORT_PATH_ROOTS=directory, NODEODX_CLEANUP_TASKS_AFTER='0',
                        BASE_WORK_ROOT=directory, _tapisJobUUID='fixture-job-007',
                        NODEODX_SHARED_SUBMODEL_V1=shared)
-            env.pop('NODEODX_PARALLEL_QUEUE_PROCESSING', None)
+            for key in ['NODEODX_PARALLEL_QUEUE_PROCESSING', 'NODEODX_DEFAULT_MAX_CONCURRENCY', 'SLURM_CPUS_ON_NODE']:
+                env.pop(key, None)
+            env.update(extra_env or {})
             if override is not None:
                 env['NODEODX_PARALLEL_QUEUE_PROCESSING'] = override
             result = subprocess.run(['bash', '-c', preamble + writer +
@@ -33,11 +35,28 @@ class CapacityTests(unittest.TestCase):
 
     def test_default_and_override(self):
         for override, expected in [(None, 64), ('8', 8), ('1', 1)]:
-            result, config = self.generate(override)
+            result, config = self.generate(override, extra_env={'SLURM_CPUS_ON_NODE': '128'})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(config['parallelQueueProcessing'], expected)
-            self.assertEqual(config['maxConcurrency'], 12)
+            self.assertEqual(config['maxConcurrency'], 128)
             self.assertFalse(config['sharedSubmodelV1'])
+
+    def test_max_concurrency_follows_allocation(self):
+        # Default 0 resolves to the cores Slurm allocated; an explicit cap wins.
+        for extra, expected in [({'SLURM_CPUS_ON_NODE': '128'}, 128),
+                                ({'SLURM_CPUS_ON_NODE': '128', 'NODEODX_DEFAULT_MAX_CONCURRENCY': '7'}, 7),
+                                ({'NODEODX_DEFAULT_MAX_CONCURRENCY': '0', 'SLURM_CPUS_ON_NODE': '16'}, 16)]:
+            result, config = self.generate(extra_env=extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(config['maxConcurrency'], expected)
+        # Outside Slurm, or with a value Slurm formats oddly, fall back to a host-derived positive integer.
+        for extra in [{}, {'SLURM_CPUS_ON_NODE': '64(x2)'}]:
+            result, config = self.generate(extra_env=extra)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(config['maxConcurrency'], 1)
+        result, config = self.generate(extra_env={'NODEODX_DEFAULT_MAX_CONCURRENCY': 'lots'})
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(config)
 
     def test_shared_config_opt_in(self):
         result, config = self.generate(shared='1')
